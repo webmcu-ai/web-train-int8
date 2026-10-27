@@ -1,18 +1,17 @@
 <!DOCTYPE html>
 <!--
-  webMCU-AI  |  Vision CNN INT8 SD trainer  |  v001
-  Companion page for the XIAO ESP32-S3 INT8 vision firmware (firmware-v001). Trains in float here, converts to INT8, writes header/myWeightsInt8.bin and .h.
-  Reads images/<class>/*.jpg from the SD card, trains the same CNN (input size and filters selectable) in plain JS,
-  analyzes the dataset, and writes header/myWeights.bin back for the device to load.
-  v006: input sizes 16..512 (preset list plus a number box), device memory and speed estimate for the chosen layout,
-        decoded images are cached as bytes (4x less browser memory at large sizes).
+  webMCU-AI  |  Vision CNN INT8 SD trainer  |  v003
+  Companion page for the XIAO ESP32-S3 vision firmware (firmware-v003).
+  Keeps two models side by side: float (header/myWeights.bin) and INT8 (header/myWeightsInt8.bin).
+  Both load from the SD card, both save together, and live inference switches between them
+  with a timing readout. The device can train the float model and convert it to INT8 too, and the two sides read each other's files.
   No external libraries. No network. MIT license. Use at your own risk.
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vision CNN INT8 SD trainer v001</title>
+<title>Vision CNN INT8 SD trainer v003</title>
 <style>
 :root{--bg:#11151b;--panel:#182029;--panel2:#1f2a36;--line:#2c3947;--text:#dde5ee;--mut:#8b9aac;--acc:#66d1bd;--acc-ink:#062a24;--bad:#ef6b73;--warn:#e9b44c;--ok:#7bd88f;--r:8px}
 *{box-sizing:border-box}
@@ -93,8 +92,8 @@ button.burst.recording{background:var(--bad);color:#fff;border-color:var(--bad);
 </head>
 <body>
 <header>
-  <h1>Vision CNN INT8 SD trainer<span class="ver">v001</span></h1>
-  <p>Browser companion for the XIAO ESP32-S3 INT8 vision firmware (firmware-v001): load the SD card, add images, review and clean them, train the same CNN in float, convert it to INT8, then write myWeightsInt8.bin back to the card. The device only runs inference.</p>
+  <h1>Vision CNN INT8 SD trainer<span class="ver">v003</span></h1>
+  <p>Browser companion for the XIAO ESP32-S3 vision firmware (firmware-v003): load the SD card, add images, review and clean them, train the same CNN in float, convert it to INT8, then save both models back to the card. The page and the device can each train, convert and run either model, so you can switch and compare. A model made on the device (Train FLOAT, Convert to INT8) loads here the same way.</p>
   <p>Everything runs in this page. Images and weights never leave your computer.</p>
 </header>
 <main>
@@ -257,11 +256,12 @@ button.burst.recording{background:var(--bad);color:#fff;border-color:var(--bad);
     <label>Calibration images<input type="number" id="myCalibN" value="200" min="10" step="10"></label>
     <button class="primary" onclick="myConvert()">Convert to INT8</button>
     <button onclick="myEvalInt8()">Evaluate float vs INT8</button>
-    <button class="primary" onclick="mySaveInt8()">Save INT8 files</button>
+    <button onclick="mySaveInt8()">Save INT8 files</button>
+    <button class="primary" onclick="mySaveBoth()">Save both models (float + INT8)</button>
   </div>
   <div class="info" id="myInfo"></div>
   <p class="note" id="mySaveStatus"></p>
-  <p class="note">Post-training quantization: weights are int8 per filter, activations are int8 per layer (ranges measured on the calibration images), biases and sums are int32. Save writes header/myWeightsInt8.bin (the device loads it at boot), header/myWeightsInt8.h (to bake into the sketch) and config.json. The file also holds one test image and its expected INT8 logits, so the device can check itself at boot. The float model stays in header/myWeights.bin.</p>
+  <p class="note">Post-training quantization: weights are int8 per filter, activations are int8 per layer (ranges measured on the calibration images), biases and sums are int32. Save writes header/myWeightsInt8.bin (the device loads it at boot), header/myWeightsInt8.h (to bake into the sketch) and config.json. The file also holds one test image and its expected INT8 logits, so the device can check itself at boot. The float model stays in header/myWeights.bin. Both files load back from the SD card when you open the folder or zip, so the two models are always available together. Retraining discards the INT8 model, because it was made from the old float weights.</p>
 </section>
 
 <!-- ============ 5 INFER (LIVE) ============ -->
@@ -269,10 +269,16 @@ button.burst.recording{background:var(--bad);color:#fff;border-color:var(--bad);
   <h2>5 Infer (live)</h2>
   <div class="row">
     <button id="btnLive" class="primary">Start live</button>
+    <select id="myEngine" onchange="myEngineChange()" aria-label="Model to run">
+      <option value="float">Model: Float</option>
+      <option value="int8">Model: INT8</option>
+    </select>
+    <label class="chk"><input type="checkbox" id="myBoth"> Also run the other model</label>
     <select class="heatAgg" aria-label="Heatmap aggregation"><option value="max">Heatmap: max over filters</option><option value="mean">Heatmap: mean over filters</option></select>
     <label class="chk"><input type="checkbox" class="heatOverlay" checked> Overlay heatmap on image</label>
   </div>
   <div class="banner" id="liveBanner">-</div>
+  <div class="info" id="myLiveInfo">Pick a model above and press Start live. The times are this page in JavaScript, not the device.</div>
   <div class="cam">
     <video id="liveVideo" class="mir" playsinline muted></video>
     <canvas id="liveHeat" width="288" height="288"></canvas>
@@ -376,7 +382,7 @@ button.burst.recording{background:var(--bad);color:#fff;border-color:var(--bad);
 
 <script>
 'use strict';
-const VERSION = 'v001';
+const VERSION = 'v003';
 
 /* ==CORE START== (no DOM use below this line until CORE END) */
 
@@ -783,7 +789,7 @@ function myForwardInt8(q, xb) {
   }
   for (let c = 0; c < N; c++) es += Math.exp(real[c] - mx);
   for (let c = 0; c < N; c++) probs[c] = Math.exp(real[c] - mx) / es;
-  return { lg, probs, real };
+  return { lg, probs, real, c2 };
 }
 function myInt8Blob(q) {
   const lay = [q.c1, q.c2, q.d], tb = q.testBytes, lg = myForwardInt8(q, tb).lg;
@@ -798,6 +804,48 @@ function myInt8Blob(q) {
   }
   u8.set(tb, o); o += tb.length; new Int8Array(buf, o, q.N).set(lg);
   return buf;
+}
+
+// ---- Read a WI81 file (the same bytes myInt8Blob writes) back into a model ----
+function myParseInt8(buf) {
+  const u8 = new Uint8Array(buf), dv = new DataView(buf);
+  if (buf.byteLength < 32 || String.fromCharCode(u8[0], u8[1], u8[2], u8[3]) !== 'WI81') return { err: 'not a WI81 model file' };
+  const inS = dv.getUint16(6, true), ch = u8[8], a = u8[9], b = u8[10], n = u8[11];
+  if (!layoutValid(inS, a, b) || (ch !== 1 && ch !== 3) || n < 1) return { err: 'the header holds an impossible layout' };
+  const c2o = (inS - 2) / 2 - 2, flat = c2o * c2o * b;
+  const want = 32 + (a * 9 * ch + a * 20 + 4) + (b * 9 * a + b * 20 + 4) + (flat * n + n * 20 + 4) + inS * inS * ch + n;
+  if (want !== buf.byteLength) return { err: 'file is ' + buf.byteLength + ' bytes but its own header needs ' + want + ' bytes' };
+  let o = 32;
+  const layer = (wCount, count) => {
+    const L = { w: new Int8Array(buf.slice(o, o + wCount)), bias: new Int32Array(count), mp: new Int32Array(count), sp: new Int32Array(count), mn: new Int32Array(count), sn: new Int32Array(count), zp: 0, s: 1, worst: 0 };
+    o += wCount;
+    for (const arr of [L.bias, L.mp, L.sp, L.mn, L.sn]) for (let i = 0; i < count; i++, o += 4) arr[i] = dv.getInt32(o, true);
+    L.zp = dv.getInt32(o, true); o += 4;
+    return L;
+  };
+  const c1 = layer(a * 9 * ch, a), c2 = layer(b * 9 * a, b), d = layer(flat * n, n);
+  d.s = dv.getFloat32(12, true);
+  const testBytes = Uint8Array.from(u8.subarray(o, o + inS * inS * ch));
+  return { q: { N: n, key: inS + 'x' + a + 'x' + b + 'x' + ch, IN: inS, CH: ch, C1F: a, C2F: b, rng: null, calib: 0, fromFile: true, testBytes, testName: 'stored in the file', c1, c2, d } };
+}
+
+// Puts a loaded INT8 file into memory. The page layout follows the file only when no float model fixes it.
+function myApplyInt8(buf) {
+  const r = myParseInt8(buf);
+  if (r.err) { state.q = null; state.myInt8Note = 'INT8 file refused: ' + r.err + '.'; return; }
+  const q = r.q;
+  if (q.N !== state.classes.length) { state.q = null; state.myInt8Note = 'INT8 file refused: it has ' + q.N + ' classes but the page has ' + state.classes.length + '.'; return; }
+  if (q.key !== layoutKey()) {
+    if (state.net && state.wStatus !== 'none' && state.wStatus !== 'refused') { state.q = null; state.myInt8Note = 'INT8 file refused: its layout ' + q.key + ' differs from the float model ' + layoutKey() + '.'; return; }
+    setLayout(q.IN, q.C1F, q.C2F, q.CH); syncLayoutControls(); state.samples.forEach(s => s.px = null);
+  }
+  state.q = q; state.i8 = null; state.myInt8Note = 'Loaded header/myWeightsInt8.bin (' + buf.byteLength + ' bytes, layout ' + q.key + ').';
+}
+
+// ---- Which models can run right now ----
+function myHasEngine(e) {
+  if (e === 'int8') return !!(state.q && state.q.key === layoutKey() && state.q.N === state.classes.length);
+  return hasModel();
 }
 setLayout(64, 4, 8);
 /* ==CORE END== */
@@ -814,7 +862,7 @@ const state = {
   mode: null, root: null, srcName: '', classes: [], samples: [], skipped: 0,
   net: null, wStatus: 'none', wNote: '', dirty: false, hadConfig: false, zipHadWeights: false,
   stream: null, live: false, insp: null, wrong: [], cm: null, evalStale: false, evalCount: 0,
-  openCls: new Set(), marks: new Set(), training: false, stop: false, pause: false, hist: { loss: [], tacc: [], vacc: [] }, epochsPlanned: 20
+  myInt8Note: '', myMs: { float: 0, int8: 0 }, openCls: new Set(), marks: new Set(), training: false, stop: false, pause: false, hist: { loss: [], tacc: [], vacc: [] }, epochsPlanned: 20
 };
 const heat = { agg: 'max', overlay: true };
 const pathOf = s => '/images/' + state.classes[s.cls] + '/' + s.name;
@@ -911,7 +959,8 @@ async function pickDir() {
     let cfg = null; const cf = await getFileAt(root, ['header', 'config.json']);
     if (cf) { try { cfg = JSON.parse(await cf.text()); } catch (e) { log('config.json could not be parsed and was ignored.'); } }
     const wf = await getFileAt(root, ['header', 'myWeights.bin']);
-    await ingest({ mode: 'dir', root, name: root.name, folders, items, cfg, weights: wf ? await wf.arrayBuffer() : null, skipped, hadImagesDir: !!imagesDir });
+    const qf = await getFileAt(root, ['header', 'myWeightsInt8.bin']);
+    await ingest({ mode: 'dir', root, name: root.name, folders, items, cfg, weights: wf ? await wf.arrayBuffer() : null, int8: qf ? await qf.arrayBuffer() : null, skipped, hadImagesDir: !!imagesDir });
   } catch (e) { log('Could not read the folder: ' + e.message); $('sourceInfo').textContent = 'Could not read the folder: ' + e.message; }
 }
 
@@ -919,7 +968,7 @@ async function loadZipFile(file) {
   try {
     $('sourceInfo').textContent = 'Reading ' + file.name + ' ...';
     const entries = await parseZip(await file.arrayBuffer());
-    const folders = new Set(), items = []; let cfg = null, weights = null, skipped = 0, m, hadImagesDir = false;
+    const folders = new Set(), items = []; let cfg = null, weights = null, int8 = null, skipped = 0, m, hadImagesDir = false;
     for (const e of entries) {
       if (/(^|\/)__MACOSX\//.test(e.name)) continue;
       if ((m = e.name.match(/(?:^|\/)images\/([^\/]+)\/$/))) { folders.add(m[1]); hadImagesDir = true; continue; }
@@ -929,9 +978,10 @@ async function loadZipFile(file) {
         continue;
       }
       if (/(?:^|\/)header\/myWeights\.bin$/.test(e.name)) weights = e.data.slice().buffer;
+      else if (/(?:^|\/)header\/myWeightsInt8\.bin$/.test(e.name)) int8 = e.data.slice().buffer;
       else if (/(?:^|\/)header\/config\.json$/.test(e.name)) { try { cfg = JSON.parse(new TextDecoder().decode(e.data)); } catch (x) { log('config.json in the zip could not be parsed and was ignored.'); } }
     }
-    await ingest({ mode: 'zip', root: null, name: file.name, folders: [...folders], items, cfg, weights, skipped, hadImagesDir });
+    await ingest({ mode: 'zip', root: null, name: file.name, folders: [...folders], items, cfg, weights, int8, skipped, hadImagesDir });
   } catch (e) { log('Could not read the zip: ' + e.message); $('sourceInfo').textContent = 'Could not read the zip: ' + e.message; }
 }
 
@@ -948,8 +998,11 @@ async function ingest(src) {
   for (const it of src.items) addSample(order.indexOf(it.clsName), it.name, it.blob);
   state.zipHadWeights = !!src.weights;
   if (src.weights) applyWeights(src.weights);
+  state.myInt8Note = '';
+  if (src.int8) myApplyInt8(src.int8);
   log('Loaded ' + src.name + ': ' + order.length + ' classes, ' + state.samples.length + ' images' + (state.skipped ? ', ' + state.skipped + ' non-.jpg files ignored' : '') + '.');
   if (state.wNote) log(state.wNote);
+  if (state.myInt8Note) log(state.myInt8Note);
   renderAll();
 }
 
@@ -1015,6 +1068,7 @@ function renderModelInfo() {
   h += '<div>Model in memory: ' + ({ none: 'none (random init on the next Train)', refused: 'none, weights file was refused', loaded: 'loaded from the SD card', trained: 'trained in this browser' + (state.dirty ? ', not saved yet' : ', saved') }[state.wStatus]) + '</div>';
   if (state.wStatus === 'refused') h += '<div class="bad">' + esc(state.wNote) + '</div>';
   $('modelInfo').innerHTML = h;
+  myRenderEngine();
 }
 
 // Rough numbers for the chosen layout: what the device needs and how fast it should run.
@@ -1340,22 +1394,40 @@ function renderEval() {
 // ---------- live inference ----------
 async function toggleLive() {
   if (state.live) { state.live = false; $('btnLive').textContent = 'Start live'; return; }
-  if (!hasModel()) { log('Live: no model in memory. Train, or load a folder with header/myWeights.bin first.'); $('liveBanner').textContent = 'No model yet'; return; }
+  const eng = $('myEngine').value;
+  if (!myHasEngine(eng)) { log('Live: the ' + eng + ' model is not in memory. Train and convert, or load an SD card that holds it.'); $('liveBanner').textContent = 'No ' + eng + ' model yet'; return; }
   await startCam(); if (!state.stream) return;
   state.live = true; $('btnLive').textContent = 'Stop live'; liveLoop();
+}
+// Runs one model on one frame. Returns the probabilities, the conv2 map for the heatmap and the milliseconds taken.
+function myRunEngine(eng, xb) {
+  const t0 = performance.now();
+  let p, c2;
+  if (eng === 'int8') { const r = myForwardInt8(state.q, xb); p = r.probs; c2 = r.c2; }
+  else { forward(state.net, bytesToFloat(xb)); p = state.net.a.probs; c2 = state.net.a.c2o; }
+  const ms = performance.now() - t0;
+  state.myMs[eng] = state.myMs[eng] ? state.myMs[eng] * 0.8 + ms * 0.2 : ms;
+  return { p, c2, ms };
 }
 async function liveLoop() {
   const hv = $('liveHeat').getContext('2d');
   while (state.live) {
     try {
-      if (!hasModel()) { state.live = false; $('btnLive').textContent = 'Start live'; break; }
+      const eng = $('myEngine').value, other = eng === 'int8' ? 'float' : 'int8';
+      if (!myHasEngine(eng)) { $('liveBanner').textContent = 'No ' + eng + ' model'; await sleep(300); continue; }
       if (grabFrame()) {
-        const blob = await frameBlob(), x = rgbaToInput(await decodeBlob(blob)); forward(state.net, x);
-        const p = state.net.a.probs, top = argmax(p);
-        $('liveBanner').textContent = state.classes[top] + '  ' + (p[top] * 100).toFixed(0) + '%';
+        const xb = rgbaToBytes(await decodeBlob(await frameBlob()));
+        const r = myRunEngine(eng, xb), p = r.p, top = argmax(p);
+        $('liveBanner').textContent = (eng === 'int8' ? 'INT8: ' : 'Float: ') + state.classes[top] + '  ' + (p[top] * 100).toFixed(0) + '%';
         $('liveBars').innerHTML = barsHtml(p);
         hv.imageSmoothingEnabled = false; hv.drawImage(capCanvas, 0, 0, 288, 288);
-        if (heat.overlay) drawHeatOn(hv, 288, state.net, heat.agg);
+        if (heat.overlay) drawHeatOn(hv, 288, { a: { c2o: r.c2 } }, heat.agg);
+        let info = (eng === 'int8' ? 'INT8' : 'Float') + ' network ' + state.myMs[eng].toFixed(1) + ' ms per frame in this page.';
+        if ($('myBoth').checked && myHasEngine(other)) {
+          const o = myRunEngine(other, xb), ot = argmax(o.p);
+          info += ' ' + (other === 'int8' ? 'INT8' : 'Float') + ' ' + state.myMs[other].toFixed(1) + ' ms says ' + esc(state.classes[ot]) + ' ' + (o.p[ot] * 100).toFixed(0) + '% (' + (ot === top ? 'same answer' : 'different answer') + ').';
+        }
+        $('myLiveInfo').innerHTML = info;
       }
     } catch (e) { log('Live error: ' + e.message); state.live = false; $('btnLive').textContent = 'Start live'; break; }
     await sleep(60);
@@ -1363,7 +1435,7 @@ async function liveLoop() {
 }
 
 // ---------- save ----------
-const configJson = () => JSON.stringify({ page: 'vision-cnn-int8-sd-trainer ' + VERSION, firmware: 'INT8 vision firmware-v001', input_size: IN, input_channels: CH, grayscale: CH === 1, conv1_filters: C1F, conv2_filters: C2F, kernel_size: 3, classes: state.classes, weights_file: 'header/myWeights.bin', weights_floats: totalFloats(state.classes.length), int8_file: 'header/myWeightsInt8.bin', note: 'Class names and grayscale are read by this page and by the firmware at boot. NUM_CLASSES, INPUT_SIZE and filter counts are compile-time in the sketch.' }, null, 2);
+const configJson = () => JSON.stringify({ page: 'vision-cnn-int8-sd-trainer ' + VERSION, firmware: 'vision firmware-v003 (train, convert, infer)', input_size: IN, input_channels: CH, grayscale: CH === 1, conv1_filters: C1F, conv2_filters: C2F, kernel_size: 3, classes: state.classes, weights_file: 'header/myWeights.bin', weights_floats: totalFloats(state.classes.length), int8_file: 'header/myWeightsInt8.bin', note: 'Class names and grayscale are read by this page and by the firmware at boot. NUM_CLASSES, INPUT_SIZE and filter counts are compile-time in the sketch.' }, null, 2);
 
 async function saveWeights() {
   const st = $('saveStatus');
@@ -1602,7 +1674,7 @@ function serFrame(line) {
   if (f[0] !== '@F' || f.length < 11) { serAppend('[incomplete debug frame ignored]\n'); return; }
   try {
     const nums = s => s === '-' ? null : s.split(',').map(Number);
-    const fr = { kind: f[1], n: f[2], pred: parseInt(f[3]), probs: nums(f[4]), logits: nums(f[5]), layout: f[6], ctr: nums(f[7]), side: parseInt(f[8]), heat: f[9] === '-' ? null : b64ToBytes(f[9]), jpg: b64ToBytes(f[10]) };
+    const fr = { kind: f[1], n: f[2], pred: parseInt(f[3]), probs: nums(f[4]), logits: nums(f[5]), layout: f[6], ctr: nums(f[7]), side: parseInt(f[8]), heat: f[9] === '-' ? null : b64ToBytes(f[9]), jpg: b64ToBytes(f[10]), eng: f[11] || '' };
     fr.blob = new Blob([fr.jpg], { type: 'image/jpeg' });
     if (dev.f) URL.revokeObjectURL(dev.f.url);
     fr.url = URL.createObjectURL(fr.blob); dev.f = fr; renderDev();
@@ -1620,13 +1692,15 @@ async function renderDev() {
     const top = argmax(fr.probs), name = i => state.classes[i] !== undefined && fr.probs.length === state.classes.length ? state.classes[i] : 'class ' + i;
     h += '<div>Device says <b>' + esc(name(top)) + ' ' + (fr.probs[top] * 100).toFixed(1) + '%</b></div>';
     if (fr.probs.length === state.classes.length) bars = barsHtml(fr.probs);
-    if (!hasModel()) h += '<div class="note">No model in memory, so nothing to compare with. Train or load weights.</div>';
+    const useI8 = fr.eng ? fr.eng === 'I8' : !!state.q;
+    if (fr.eng) h += '<div>Device model: <b>' + (useI8 ? 'INT8' : 'float') + '</b></div>';
+    if (!myHasEngine(useI8 ? 'int8' : 'float')) h += '<div class="note">The page has no ' + (useI8 ? 'INT8' : 'float') + ' model in memory, so nothing to compare with.</div>';
     else if (fr.layout !== layoutKey() || fr.probs.length !== state.classes.length) h += '<div class="warn">Device layout ' + esc(fr.layout) + ' with ' + fr.probs.length + ' classes differs from this page (' + esc(layoutKey()) + ', ' + state.classes.length + ' classes). No comparison.</div>';
     else {
       const xb = rgbaToBytes(await decodeBlob(fr.blob)); if (tok !== dev.tok) return;
-      const x = bytesToFloat(xb), p = state.q ? myForwardInt8(state.q, xb).probs : (forward(state.net, x), state.net.a.probs), bt = argmax(p);
+      const x = bytesToFloat(xb), p = useI8 ? myForwardInt8(state.q, xb).probs : (forward(state.net, x), state.net.a.probs), bt = argmax(p);
       let md = 0; for (let i = 0; i < p.length; i++) md = Math.max(md, Math.abs(p[i] - fr.probs[i]) * 100);
-      h += '<div>Page ' + (state.q ? 'INT8' : 'float') + ' model on the same JPEG says <b>' + esc(state.classes[bt]) + ' ' + (p[bt] * 100).toFixed(1) + '%</b>. Largest probability difference <b class="' + (md < 1 ? 'ok' : md < 5 ? 'warn' : 'bad') + '">' + md.toFixed(2) + ' points</b>.</div>';
+      h += '<div>Page ' + (useI8 ? 'INT8' : 'float') + ' model on the same JPEG says <b>' + esc(state.classes[bt]) + ' ' + (p[bt] * 100).toFixed(1) + '%</b>. Largest probability difference <b class="' + (md < 1 ? 'ok' : md < 5 ? 'warn' : 'bad') + '">' + md.toFixed(2) + ' points</b>.</div>';
       const c0 = ((IN / 2) * IN + IN / 2) * CH;
       if (fr.ctr) {
         const dc = Math.max(...fr.ctr.map((v, k) => Math.abs(x[c0 + k] - v)));
@@ -1682,14 +1756,19 @@ async function myEvalInt8() {
   myRenderInt8();
 }
 function myRenderInt8() {
-  const q = state.q, e = state.i8; if (!q) { $('myInfo').innerHTML = 'Not converted yet. Train or load a float model, then press Convert to INT8.'; return; }
+  const q = state.q, e = state.i8;
+  if (!q) { $('myInfo').innerHTML = (state.myInt8Note ? '<div class="bad">' + esc(state.myInt8Note) + '</div>' : '') + 'No INT8 model yet. Train or load a float model, then press Convert to INT8.'; myRenderEngine(); return; }
   const lb = L => L.w.length + L.bias.length * 20 + 4, i8 = 32 + lb(q.c1) + lb(q.c2) + lb(q.d), f32 = totalFloats(q.N) * 4;
-  const worst = Math.max(q.c1.worst, q.c2.worst, q.d.worst), r = q.rng;
-  let h = '<div>Calibration: ' + q.calib + ' images. Float ranges: conv1 ' + r.lo1.toFixed(2) + ' to ' + r.hi1.toFixed(2) + ', conv2 ' + r.lo2.toFixed(2) + ' to ' + r.hi2.toFixed(2) + ', logits ' + r.lo3.toFixed(2) + ' to ' + r.hi3.toFixed(2) + '.</div>';
+  let h = '';
+  if (q.fromFile) h += '<div>INT8 model loaded from the SD card, layout ' + q.key + '. Convert again to rebuild it from the float model.</div>';
+  else {
+    const r = q.rng; h += '<div>Calibration: ' + q.calib + ' images. Float ranges: conv1 ' + r.lo1.toFixed(2) + ' to ' + r.hi1.toFixed(2) + ', conv2 ' + r.lo2.toFixed(2) + ' to ' + r.hi2.toFixed(2) + ', logits ' + r.lo3.toFixed(2) + ' to ' + r.hi3.toFixed(2) + '.</div>';
+    const worst = Math.max(q.c1.worst, q.c2.worst, q.d.worst);
+    h += '<div>Largest possible int32 sum: <b class="' + (worst > 2147483647 ? 'bad' : 'ok') + '">' + Math.round(worst).toLocaleString() + '</b> of 2,147,483,647' + (worst > 2147483647 ? '. Overflow possible: use a smaller layout.' : '.') + '</div>';
+  }
   h += '<div>Model size: float <b>' + f32.toLocaleString() + '</b> bytes, INT8 <b>' + i8.toLocaleString() + '</b> bytes (' + (f32 / i8).toFixed(1) + 'x smaller, without the test image).</div>';
-  h += '<div>Largest possible int32 sum: <b class="' + (worst > 2147483647 ? 'bad' : 'ok') + '">' + Math.round(worst).toLocaleString() + '</b> of 2,147,483,647' + (worst > 2147483647 ? '. Overflow possible: use a smaller layout.' : '.') + '</div>';
   if (e) h += '<div>On ' + e.n + ' ' + (e.which === 'val' ? 'validation' : 'all') + ' images: float <b>' + (100 * e.fOk / e.n).toFixed(1) + '%</b>, INT8 <b>' + (100 * e.qOk / e.n).toFixed(1) + '%</b>, same answer <b>' + (100 * e.same / e.n).toFixed(1) + '%</b>, largest probability difference <b>' + e.md.toFixed(2) + '</b> points.</div>';
-  $('myInfo').innerHTML = h;
+  $('myInfo').innerHTML = h; myRenderEngine();
 }
 function myInt8Header(buf) {
   const u = new Uint8Array(buf);
@@ -1711,6 +1790,30 @@ async function mySaveInt8() {
     } catch (e) { st.textContent = 'Save failed: ' + e.message; }
   } else st.textContent = 'Zip mode: the INT8 files are included in Save .zip.';
   log(st.textContent);
+}
+
+async function mySaveBoth() {
+  const st = $('mySaveStatus');
+  if (!hasModel()) { st.textContent = 'No float model to save. Train or load weights first.'; return; }
+  if (!state.q || state.q.key !== layoutKey()) { st.textContent = 'Convert to INT8 first, then save both.'; return; }
+  if (state.mode !== 'dir') { st.textContent = 'Zip mode: Save .zip in section 6 already holds both models.'; return; }
+  await saveWeights();
+  await mySaveInt8();
+  st.textContent = 'Saved both: header/myWeights.bin (float) and header/myWeightsInt8.bin (INT8), with config.json.';
+  log(st.textContent);
+}
+
+// ---------- model switch (live inference) ----------
+function myRenderEngine() {
+  const sel = $('myEngine'); if (!sel) return;
+  const f = myHasEngine('float'), i = myHasEngine('int8');
+  sel.options[0].textContent = 'Model: Float' + (f ? '' : ' (none)');
+  sel.options[1].textContent = 'Model: INT8' + (i ? '' : ' (none)');
+  if (!myHasEngine(sel.value) && (f || i)) sel.value = f ? 'float' : 'int8';
+}
+function myEngineChange() {
+  state.myMs = { float: 0, int8: 0 };
+  if (!myHasEngine($('myEngine').value)) $('myLiveInfo').textContent = 'That model is not in memory. Train and convert, or load an SD card that holds it.';
 }
 
 // ---------- wiring ----------
