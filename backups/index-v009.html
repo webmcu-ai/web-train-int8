@@ -1,0 +1,2461 @@
+<!DOCTYPE html>
+<!--
+  webMCU-AI  |  Vision CNN INT8 SD trainer  |  v006
+  Companion page for the XIAO ESP32-S3 vision firmware (firmware-v009).
+  Keeps two models side by side: float (header/myWeights.bin) and INT8 (header/myWeightsInt8.bin).
+  Both load from the SD card, both save together, and live inference switches between them
+  with a timing readout. The device can train the float model and convert it to INT8 too, and the two sides read each other's files.
+  v009 only pairs with firmware-v009, which has a red/blue switch (off, because the camera decodes red first) and a serial colour check. Nothing else changed.
+  v007 added section 4d: the MobileNetV1 alpha 0.25 backbone quantized to INT8 at 96x96, a head trained on its INT8 features,
+  and the files (myMobilenetInt8.bin, myMobilenetTest.bin) that the firmware menu item MobileNet INT8 loads from the SD card.
+  Section 4c keeps the own float engine (verify against TensorFlow.js, compare resolutions).
+  Only section 4c uses TensorFlow.js and MobileNet from a CDN; everything else needs no libraries and no network.
+  MIT license. Use at your own risk.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vision CNN INT8 SD trainer v009</title>
+<style>
+:root{--bg:#11151b;--panel:#182029;--panel2:#1f2a36;--line:#2c3947;--text:#dde5ee;--mut:#8b9aac;--acc:#66d1bd;--acc-ink:#062a24;--bad:#ef6b73;--warn:#e9b44c;--ok:#7bd88f;--r:8px}
+*{box-sizing:border-box}
+html{color-scheme:dark}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 "Segoe UI",system-ui,-apple-system,sans-serif}
+header,main{max-width:1100px;margin:0 auto;padding:0 20px}
+header{padding-top:28px;padding-bottom:4px}
+h1{font-size:26px;margin:0 0 6px;font-weight:650;letter-spacing:-.01em}
+.ver{font-size:14px;color:var(--mut);font-weight:400;margin-left:8px}
+header p{margin:2px 0;color:var(--mut);max-width:72ch}
+section{margin:22px 0;padding:18px 20px;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--acc);border-radius:var(--r)}
+h2{margin:0 0 12px;font-size:18px;font-weight:600}
+h3{margin:18px 0 8px;font-size:15px;font-weight:600}
+p{margin:6px 0}
+button,select,input,textarea{font:inherit;color:var(--text)}
+button{min-height:42px;padding:8px 16px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;cursor:pointer}
+button:hover:not(:disabled){border-color:var(--acc)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.primary{background:var(--acc);color:var(--acc-ink);border-color:var(--acc);font-weight:600}
+button.danger{border-color:var(--bad);color:var(--bad)}
+input[type=number],input[type=text],select{min-height:40px;padding:6px 10px;background:#0f1319;border:1px solid var(--line);border-radius:6px;width:100%}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+label{display:block;font-size:13px;color:var(--mut)}
+label.chk{display:flex;gap:8px;align-items:center;font-size:14px;color:var(--text);min-height:40px}
+input[type=checkbox]{width:18px;height:18px;accent-color:var(--acc)}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:8px 0}
+.row>select,.row>input[type=text]{width:auto;min-width:160px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.note{color:var(--mut);font-size:13px}
+.info{background:#0f1319;border:1px solid var(--line);border-radius:6px;padding:10px 14px;font-size:14px}
+.info div{margin:2px 0}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{padding:6px 10px;border-bottom:1px solid var(--line);text-align:left}
+th{color:var(--mut);font-weight:500}
+.tblwrap{overflow-x:auto}
+.cm td,.cm th{text-align:center;min-width:56px}
+.cm td.diag{outline:2px solid var(--acc);outline-offset:-2px;font-weight:700}
+pre{margin:8px 0;padding:10px 14px;background:#0f1319;border:1px solid var(--line);border-radius:6px;overflow-x:auto;font:13px/1.5 ui-monospace,Consolas,monospace}
+details{margin:6px 0;border:1px solid var(--line);border-radius:6px;background:#0f1319}
+summary{cursor:pointer;padding:8px 12px;min-height:40px;display:flex;align-items:center}
+.thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(76px,1fr));gap:6px;padding:8px 12px 12px}
+.thumbs img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:4px;cursor:pointer;border:1px solid var(--line);background:#000}
+.wrong{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:10px}
+.wrong figure{margin:0;cursor:pointer;font-size:12px}
+.wrong img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:4px;border:1px solid var(--bad)}
+.wrong figcaption{color:var(--mut);margin-top:2px}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin-top:12px}
+canvas.chart{width:100%;height:auto;border:1px solid var(--line);border-radius:6px}
+.bar{height:14px;background:#0f1319;border-radius:4px;overflow:hidden;border:1px solid var(--line)}
+.bar i{display:block;height:100%;background:var(--acc)}
+.prob{display:grid;grid-template-columns:110px 1fr 52px;gap:8px;align-items:center;font-size:13px;margin:3px 0}
+.prob span:last-child{text-align:right;color:var(--mut)}
+.cam{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start}
+.cam video,.cam canvas{width:288px;height:288px;background:#000;border-radius:6px;border:1px solid var(--line);object-fit:cover}
+video.mir{transform:scaleX(-1)}
+.banner{font-size:28px;font-weight:650;margin:6px 0}
+dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:var(--r);padding:16px;max-width:min(860px,96vw)}
+dialog::backdrop{background:rgba(0,0,0,.65)}
+.inspBody{display:flex;flex-wrap:wrap;gap:16px}
+.inspBody canvas{width:min(400px,86vw);height:auto;aspect-ratio:1;border-radius:6px;border:1px solid var(--line);background:#000}
+.inspSide{flex:1;min-width:250px}
+textarea.mono,textarea#console{width:100%;height:220px;background:#0b0e13;border:1px solid var(--line);border-radius:6px;padding:10px;font:12.5px/1.45 ui-monospace,Consolas,monospace;resize:vertical}
+.vwrap{position:relative;width:288px;height:288px}
+.vwrap video{width:100%;height:100%}
+.vwrap.flash video{outline:4px solid var(--bad);outline-offset:-4px}
+.rec{display:none;position:absolute;top:10px;right:10px;background:var(--bad);color:#fff;font-weight:700;font-size:13px;padding:2px 10px;border-radius:12px}
+.rec.on{display:block}
+button.burst{background:#2a1a1d;border-color:var(--bad);color:#ffb3b8}
+button.burst.recording{background:var(--bad);color:#fff;border-color:var(--bad);font-weight:700}
+.revframe{position:relative;width:min(400px,86vw);aspect-ratio:1;border:3px solid var(--line);border-radius:6px;overflow:hidden;background:#000}
+.revframe img{width:100%;height:100%;object-fit:cover;display:block}
+.revframe.marked{border-color:var(--bad)}
+.revtag{display:none;position:absolute;top:8px;left:8px;background:var(--bad);color:#fff;padding:2px 8px;border-radius:4px;font-weight:600;font-size:13px}
+.revframe.marked .revtag{display:block}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Vision CNN INT8 SD trainer<span class="ver">v009</span></h1>
+  <p>Browser companion for the XIAO ESP32-S3 vision firmware (firmware-v009): load the SD card, add images, review and clean them, train the same CNN in float, convert it to INT8, then save both models back to the card. The page and the device can each train, convert and run either model, so you can switch and compare. A model made on the device (Train FLOAT, Convert to INT8) loads here the same way.</p>
+  <p>Everything runs in this page. Images and weights never leave your computer.</p>
+</header>
+<main>
+
+<!-- ============ 1 DATA SOURCE ============ -->
+<section id="s-source">
+  <h2>1 Data source</h2>
+  <div class="row">
+    <button id="btnDir" class="primary">Pick SD card folder</button>
+    <button id="btnZip">Load .zip</button>
+    <input type="file" id="zipFile" accept=".zip,application/zip" hidden>
+  </div>
+  <p class="note" id="dirNote"></p>
+  <div class="info" id="sourceInfo">Nothing loaded yet. Pick the root of the SD card (the folder that contains <b>images</b> and <b>header</b>).</div>
+</section>
+
+<!-- ============ 2 CLASSES AND DATA ============ -->
+<section id="s-data">
+  <h2>2 Classes and data</h2>
+  <div class="tblwrap"><table id="classTable"><thead><tr><th>Class folder</th><th>Images</th><th>Train / validation</th><th></th></tr></thead><tbody></tbody></table></div>
+  <div class="row">
+    <input type="text" id="newClass" placeholder="New class, e.g. 3Book" aria-label="New class name">
+    <button id="btnAddClass">Add class</button>
+  </div>
+  <p class="note">The sketch must be compiled with these values (the firmware refuses a weights file of the wrong size). The firmware also reads the class names from header/config.json at boot, but their count must equal NUM_CLASSES, so adding or removing a class means editing NUM_CLASSES and reflashing:</p>
+  <pre id="fwLines">(no classes yet)</pre>
+
+  <h3>Add images from the webcam</h3>
+  <div class="cam">
+    <div class="vwrap" id="capWrap"><video id="capVideo" class="mir" playsinline muted></video><span id="rec" class="rec">● REC</span></div>
+    <div style="flex:1;min-width:230px">
+      <div class="row"><button id="btnCam">Start camera</button></div>
+      <div class="row">
+        <select id="capClass" aria-label="Class to capture into"></select>
+        <button id="btnCapture" class="primary">Capture (Space)</button>
+        <button id="btnBurst" class="burst">Burst 10 (B)</button>
+        <label class="chk" style="gap:6px">Delay <input type="number" id="burstMs" value="0" min="0" max="2000" step="10" style="width:84px" aria-label="Burst delay in milliseconds"> ms</label>
+      </div>
+      <label class="chk"><input type="checkbox" id="mirror" checked> Mirror frames horizontally like the device (hmirror on). The device also flips vertically, so device and page images match.</label>
+      <p class="note" id="capNote">Frames are center-cropped to a square, resized to 240x240 and saved as JPEG straight into images/&lt;class&gt;/ (SD folder) or the zip. Burst takes 10 fresh camera frames back to back, plus the delay you set between them, while the button is red, then saves them. Burst frames are near-duplicates, so move or tilt the object between bursts.</p>
+    </div>
+  </div>
+
+  <h3>Sample browser</h3>
+  <div class="row"><button id="btnReview" class="primary">Review images</button></div>
+  <p class="note">Review steps through one class at a time: mark bad images, then delete them all with one confirmation. Or open a class below and click an image to see its heatmap, delete it, or move it.</p>
+  <div id="browser"></div>
+</section>
+
+<!-- ============ 3 TRAIN ============ -->
+<section id="s-train">
+  <h2>3 Train</h2>
+  <h3 style="margin-top:0">Model layout</h3>
+  <div class="grid">
+    <label>Input size (preset)
+      <select id="inSize">
+        <optgroup label="Exact fractions of the 240x240 camera frame">
+          <option value="24">24 x 24</option>
+          <option value="30">30 x 30</option>
+          <option value="40">40 x 40</option>
+          <option value="48">48 x 48</option>
+          <option value="60">60 x 60</option>
+          <option value="80">80 x 80</option>
+          <option value="120">120 x 120 (tested on device)</option>
+          <option value="240">240 x 240 (camera native, no resampling)</option>
+        </optgroup>
+        <optgroup label="Other sizes up to the camera frame">
+          <option value="32">32 x 32</option>
+          <option value="64" selected>64 x 64 (device can train this)</option>
+          <option value="96">96 x 96</option>
+          <option value="112">112 x 112</option>
+          <option value="128">128 x 128</option>
+          <option value="144">144 x 144</option>
+          <option value="160">160 x 160</option>
+          <option value="176">176 x 176</option>
+          <option value="192">192 x 192</option>
+          <option value="224">224 x 224</option>
+        </optgroup>
+        <optgroup label="Larger than the camera frame (pixels repeat, slow)">
+          <option value="256">256 x 256</option>
+          <option value="300">300 x 300 (299 is odd, not allowed)</option>
+          <option value="320">320 x 320</option>
+          <option value="384">384 x 384</option>
+          <option value="416">416 x 416</option>
+          <option value="448">448 x 448</option>
+          <option value="512">512 x 512</option>
+        </optgroup>
+        <option value="custom">Custom (type it in the box)</option>
+      </select>
+    </label>
+    <label>Or type any even size (16 to 512)<input type="number" id="inSizeNum" value="64" min="16" max="512" step="2"></label>
+    <label>Conv1 filters (1-16)<input type="number" id="c1f" value="4" step="1" min="1" max="16"></label>
+    <label>Conv2 filters (1-32)<input type="number" id="c2f" value="8" step="1" min="1" max="32"></label>
+  </div>
+  <label class="chk"><input type="checkbox" id="gray" onclick="onGrayClick()"> Grayscale input (1 channel). Saved as "grayscale" in config.json. Unticked is regular RGB.</label>
+  <div class="info" id="layoutInfo" style="margin-top:10px"></div>
+  <p class="note">These are compile-time settings in the sketch (INPUT_SIZE, CONV1_FILTERS, CONV2_FILTERS). Copy the lines from section 2 into the sketch after changing them. The 3x3 kernel is fixed in the firmware loops. Images on the card stay 240x240, so changing the size needs no new photos, only a retrain. The size must be even because of the 2x2 max pool. Cost grows with the square of the input size, in the browser and on the device.</p>
+  <h3>Training settings</h3>
+  <div class="grid">
+    <label>Learning rate<input type="number" id="lr" value="0.0003" step="0.0001" min="0.000001"></label>
+    <label>Batch size<input type="number" id="batch" value="6" step="1" min="1"></label>
+    <label>Epochs<input type="number" id="epochs" value="20" step="1" min="1"></label>
+    <label>Validation rule
+      <select id="valMode">
+        <option value="fw">Last N images per class (firmware rule)</option>
+        <option value="pct">Percent of smallest class</option>
+      </select>
+    </label>
+    <label><span id="valAmtLabel">Images per class held out</span><input type="number" id="valAmt" value="3" step="1" min="0"></label>
+    <label>Dropout (browser only)<input type="number" id="dropout" value="0" step="0.05" min="0" max="0.8"></label>
+  </div>
+  <div class="row">
+    <label class="chk"><input type="checkbox" id="augment"> Augmentation: flip and brightness (browser only)</label>
+    <label class="chk"><input type="checkbox" id="cont" checked> Continue from the weights in memory</label>
+  </div>
+  <p class="note" id="splitInfo"></p>
+  <div class="row">
+    <button id="btnTrain" class="primary">Train</button>
+    <button id="btnPause" disabled>Pause</button>
+    <button id="btnStop" class="danger" disabled>STOP</button>
+  </div>
+  <div class="info" id="trainStatus">Idle.</div>
+  <div class="charts">
+    <canvas id="chLoss" class="chart" width="520" height="220"></canvas>
+    <canvas id="chAcc" class="chart" width="520" height="220"></canvas>
+  </div>
+  <p class="note">Training never saves by itself. Save the model in section 6 when you are happy with it.</p>
+</section>
+
+<!-- ============ 4 ANALYZE ============ -->
+<section id="s-analyze">
+  <h2>4 Analyze</h2>
+  <div class="row">
+    <select id="evalSet" aria-label="Evaluate on">
+      <option value="val">Evaluate on validation images</option>
+      <option value="all">Evaluate on all images (find bad labels)</option>
+    </select>
+    <button id="btnEval" class="primary">Update evaluation</button>
+    <button id="btnParity">Parity self-test</button>
+  </div>
+  <div class="info" id="modelInfo"></div>
+
+  <h3>Confusion matrix</h3>
+  <p class="note" id="evalNote">No evaluation yet. It runs automatically when training ends.</p>
+  <div class="tblwrap" id="cmWrap"></div>
+
+  <h3>Per-class precision and recall</h3>
+  <div class="tblwrap" id="pcWrap"></div>
+  <div id="pcWarn"></div>
+
+  <h3>Misclassified images</h3>
+  <p class="note">Click one to inspect it, then delete it or move it to the right class.</p>
+  <div class="wrong" id="wrongGal"></div>
+</section>
+
+<!-- ============ 4b INT8 ============ -->
+<section id="s-int8">
+  <h2>4b Convert to INT8</h2>
+  <div class="row">
+    <label>Calibration images<input type="number" id="myCalibN" value="200" min="10" step="10"></label>
+    <button class="primary" onclick="myConvert()">Convert to INT8</button>
+    <button onclick="myEvalInt8()">Evaluate float vs INT8</button>
+    <button onclick="mySaveInt8()">Save INT8 files</button>
+    <button class="primary" onclick="mySaveBoth()">Save both models (float + INT8)</button>
+  </div>
+  <div class="info" id="myInfo"></div>
+  <p class="note" id="mySaveStatus"></p>
+  <p class="note">Post-training quantization: weights are int8 per filter, activations are int8 per layer (ranges measured on the calibration images), biases and sums are int32. Save writes header/myWeightsInt8.bin (the device loads it at boot), header/myWeightsInt8.h (to bake into the sketch) and config.json. The file also holds one test image and its expected INT8 logits, so the device can check itself at boot. The float model stays in header/myWeights.bin. Both files load back from the SD card when you open the folder or zip, so the two models are always available together. Retraining discards the INT8 model, because it was made from the old float weights.</p>
+</section>
+
+<!-- ============ 4c MOBILENET TRANSFER LEARNING (PATHWAY 3) ============ -->
+<section id="s-mobilenet">
+  <h2>4c MobileNet transfer learning (pathway 3)</h2>
+  <p class="note">Pathway 1 is the float CNN (section 3), pathway 2 the INT8 CNN (section 4b). Pathway 3 freezes a pretrained MobileNet and trains only a small new head on its features. The MobileNet itself is not trained. It runs in the browser only: the ESP32 firmware cannot run it yet. TensorFlow.js and MobileNet load from a CDN when you press Load.</p>
+  <div class="row">
+    <select id="myMnModel" aria-label="MobileNet version and alpha">
+      <option value="v1-0.25" selected>MobileNetV1 alpha 0.25 (smallest)</option>
+      <option value="v1-0.50">MobileNetV1 alpha 0.50</option>
+      <option value="v1-0.75">MobileNetV1 alpha 0.75</option>
+      <option value="v1-1.00">MobileNetV1 alpha 1.00</option>
+      <option value="v2-0.50">MobileNetV2 alpha 0.50</option>
+      <option value="v2-0.75">MobileNetV2 alpha 0.75</option>
+      <option value="v2-1.00">MobileNetV2 alpha 1.00</option>
+    </select>
+    <button onclick="myMnLoad()">1 Load MobileNet</button>
+    <button onclick="myMnExtract()">2 Extract features</button>
+    <button onclick="myMnInspect()">Inspect backbone</button>
+    <button onclick="myMnDumpSave()">Save report (.txt)</button>
+  </div>
+  <div class="grid">
+    <label>Head hidden units (0 = none)<input type="number" id="myMnHidden" value="32" min="0" step="8"></label>
+    <label>Head epochs<input type="number" id="myMnEpochs" value="40" min="1" step="5"></label>
+    <label>Head learning rate<input type="number" id="myMnLr" value="0.001" min="0.00001" step="0.0005"></label>
+  </div>
+  <div class="row">
+    <button class="primary" onclick="myMnTrain()">3 Train head</button>
+    <button onclick="myMnCompare()">4 Compare the three pathways</button>
+    <button onclick="myMnDoctor()">Dataset doctor</button>
+    <button onclick="myMnSave()">Save head (.json)</button>
+    <label class="chk">Load head <input type="file" id="myMnFile" accept=".json" onchange="myMnLoadHead(this)"></label>
+  </div>
+  <div class="row">
+    <button onclick="myEngVerify()">5 Verify own engine (224)</button>
+    <button onclick="myEngResolutions()">6 Compare resolutions 96 / 128 / 224</button>
+  </div>
+  <div class="info" id="myMnInfo">Press Load MobileNet to begin.</div>
+  <textarea id="myMnDump" rows="8" readonly placeholder="The Inspect backbone report appears here." style="width:100%;font-family:monospace;font-size:12px"></textarea>
+  <div class="tblwrap" id="myMnTable"></div>
+  <div class="wrong" id="myMnDoctorGal"></div>
+</section>
+
+<section id="s-mn8">
+  <h2>4d MobileNet INT8 on the ESP32 (pathway 3 test)</h2>
+  <p class="note">Quantizes the MobileNetV1 alpha 0.25 backbone to INT8 at 96x96 using the own engine from section 4c, trains a head on the INT8 features, and saves two files for the firmware menu item MobileNet INT8. Load MobileNet (4c, alpha 0.25) and your images first. The INT8 pass here uses the same integer arithmetic as the firmware, and the test picture checksum shown below is what the firmware self test compares with. Input is sampled nearest-pixel from the 240x240 picture, like the other pathways.</p>
+  <div class="grid">
+    <label>Calibration images<input type="number" id="myQnCal" value="100" min="10" step="10"></label>
+  </div>
+  <div class="row">
+    <button class="primary" onclick="myQnBuild()">1 Quantize backbone to INT8 (96x96)</button>
+    <button onclick="myQnTrain()">2 Train head on INT8 features</button>
+    <button onclick="myQnSave()">3 Save for the SD card</button>
+  </div>
+  <div class="info" id="myQnInfo">Load MobileNet in section 4c, then press 1.</div>
+  <div class="tblwrap" id="myQnTable"></div>
+</section>
+
+<!-- ============ 5 INFER (LIVE) ============ -->
+<section id="s-infer">
+  <h2>5 Infer (live)</h2>
+  <div class="row">
+    <button id="btnLive" class="primary">Start live</button>
+    <select id="myEngine" onchange="myEngineChange()" aria-label="Model to run">
+      <option value="float">Model: Float</option>
+      <option value="int8">Model: INT8</option>
+    </select>
+    <label class="chk"><input type="checkbox" id="myBoth"> Also run the other model</label>
+    <select class="heatAgg" aria-label="Heatmap aggregation"><option value="max">Heatmap: max over filters</option><option value="mean">Heatmap: mean over filters</option></select>
+    <label class="chk"><input type="checkbox" class="heatOverlay" checked> Overlay heatmap on image</label>
+  </div>
+  <div class="banner" id="liveBanner">-</div>
+  <div class="info" id="myLiveInfo">Pick a model above and press Start live. The times are this page in JavaScript, not the device.</div>
+  <div class="cam">
+    <video id="liveVideo" class="mir" playsinline muted></video>
+    <canvas id="liveHeat" width="288" height="288"></canvas>
+    <div style="flex:1;min-width:230px" id="liveBars"></div>
+  </div>
+  <p class="note">Each live frame goes through the same path as a stored image: square crop, 240x240 JPEG, decode, nearest-pixel resize to the model input size chosen in section 3.</p>
+</section>
+
+<!-- ============ 6 SAVE ============ -->
+<section id="s-save">
+  <h2>6 Save</h2>
+  <div class="row">
+    <button id="btnSaveW" class="primary">Save weights to header/myWeights.bin</button>
+    <button id="btnSaveCfg">Write config.json only</button>
+    <button id="btnSaveZip">Save .zip</button>
+    <label class="chk"><input type="checkbox" id="zipImgs" checked> Include images in .zip</label>
+  </div>
+  <div class="info" id="saveInfo">
+    <div>SD folder mode: the existing weights file is copied to <b>myWeights.bin.bak</b> first, then the new one is written. A <b>config.json</b> with the class names and layout is written next to it. The firmware reads the class names from it at boot. NUM_CLASSES, INPUT_SIZE and the filter counts always come from the compiled sketch.</div>
+    <div>Zip mode: Save weights keeps the model for the zip. Save .zip downloads header/myWeights.bin (and images if ticked) in the SD card layout.</div>
+  </div>
+  <p class="note" id="saveStatus"></p>
+</section>
+
+<!-- ============ 7 CONSOLE ============ -->
+<section id="s-console">
+  <h2>7 Console</h2>
+  <textarea id="console" readonly aria-label="Console log"></textarea>
+</section>
+
+<!-- ============ 8 SERIAL MONITOR ============ -->
+<section id="s-serial">
+  <h2>8 Serial monitor</h2>
+  <div class="row">
+    <button id="btnSerial" class="primary">Connect</button>
+    <span class="note" id="serStatus">Not connected.</span>
+    <label class="chk"><input type="checkbox" id="serDebug" checked> Ask the device for debug frames (firmware-v009 or later)</label>
+  </div>
+  <textarea id="serOut" class="mono" readonly aria-label="Serial output"></textarea>
+  <div class="row">
+    <input type="text" id="serIn" placeholder="Text to send, e.g. t, l or 1" aria-label="Text to send" disabled style="flex:1;min-width:200px">
+    <button id="serSend" disabled>Send</button>
+  </div>
+  <p class="note">115200 baud, a newline is added to what you send. Close the Arduino IDE serial monitor first. Opening the port can reboot the board, and a reboot may drop the connection: press Connect again. Desktop Chrome or Edge only.</p>
+  <h3>Device view</h3>
+  <p class="note">With the box ticked, the firmware sends its camera JPEG (and a heatmap) every 10th inference, each saved image, and a slow live preview while collecting. Frame lines are shown here instead of in the monitor text. With a model in memory that has the same layout, the page runs the same JPEG through its own copy of the network and compares.</p>
+  <div class="row"><label class="chk"><input type="checkbox" class="heatOverlay" checked> Overlay device heatmap on image</label></div>
+  <div class="cam">
+    <canvas id="devCanvas" width="288" height="288"></canvas>
+    <div style="flex:1;min-width:230px"><div class="info" id="devInfo">No debug frame yet. Connect, keep the box ticked, then run Infer or a collect mode on the device.</div><div id="devBars"></div></div>
+  </div>
+</section>
+
+</main>
+
+<!-- Inspector -->
+<dialog id="insp">
+  <div class="row" style="justify-content:space-between;margin-top:0">
+    <strong id="inspTitle"></strong>
+    <button id="inspClose">Close</button>
+  </div>
+  <div class="inspBody">
+    <canvas id="inspCanvas" width="480" height="480"></canvas>
+    <div class="inspSide">
+      <div id="inspProbs"></div>
+      <div class="row">
+        <select class="heatAgg" aria-label="Heatmap aggregation"><option value="max">Heatmap: max over filters</option><option value="mean">Heatmap: mean over filters</option></select>
+      </div>
+      <label class="chk"><input type="checkbox" class="heatOverlay" checked> Overlay heatmap on image</label>
+      <p class="note">Heatmap: last conv layer, blue = low, red = high. Position is approximate (the last conv map is stretched over the image).</p>
+      <div class="row"><select id="inspMove" aria-label="Move to class"></select><button id="inspMoveBtn">Move</button></div>
+      <div class="row"><button id="inspParity">Print parity line</button><button id="inspDelete" class="danger">Delete image</button></div>
+    </div>
+  </div>
+</dialog>
+
+<!-- Review -->
+<dialog id="rev">
+  <div class="row" style="justify-content:space-between;margin-top:0">
+    <strong>Review images</strong>
+    <button id="revClose">Close</button>
+  </div>
+  <div class="row">
+    <select id="revClass" aria-label="Class to review"></select>
+    <label class="chk"><input type="checkbox" id="revSusp"> Suspicious first (needs a model)</label>
+  </div>
+  <div class="inspBody">
+    <div>
+      <div class="revframe" id="revFrame"><img id="revImg" alt=""><span class="revtag">MARKED BAD</span></div>
+      <p class="note" id="revCount"></p>
+    </div>
+    <div class="inspSide">
+      <div id="revPred" class="info">-</div>
+      <div class="row"><button id="revPrev">Previous (←)</button><button id="revNext">Next (→)</button></div>
+      <div class="row"><button id="revMark" class="danger">Mark bad (X)</button><button id="revNextClass">Next class</button></div>
+      <div class="row"><button id="revDelete" class="danger">Delete marked (0)</button><button id="revClear">Clear marks</button></div>
+      <p class="note">Marking deletes nothing. Delete marked asks once, then removes every marked image. Keys: arrows to move, X to mark and advance.</p>
+    </div>
+  </div>
+</dialog>
+
+<script>
+'use strict';
+const VERSION = 'v009';
+
+/* ==CORE START== (no DOM use below this line until CORE END) */
+
+// ---- Architecture constants, copied from the firmware ----
+// Layout is variable (compile-time in the firmware): INPUT_SIZE, CONV1_FILTERS, CONV2_FILTERS. Kernel is fixed at 3x3.
+const SRC = 240;                                 // camera frame size (the images on the card are always this size)
+const MIN_IN = 16, MAX_IN = 512;                 // allowed input sizes (must be even)
+let IN = 64, CH = 3, C1F = 4, C2F = 8, C1O, P1O, C2O, C1W, C2W, FLAT, LUT = null;
+function buildLUT() { const t = new Int32Array(IN); for (let i = 0; i < IN; i++) t[i] = Math.min(Math.floor((i + 0.5) * SRC / IN), SRC - 1); return t; }
+function setLayout(i, a, b, ch) {
+  if (ch !== undefined) CH = ch;
+  IN = i; C1F = a; C2F = b; C1O = IN - 2; P1O = C1O / 2; C2O = P1O - 2;
+  C1W = 9 * CH * C1F; C2W = 9 * C1F * C2F; FLAT = C2O * C2O * C2F; LUT = buildLUT();
+}
+const layoutKey = () => IN + 'x' + C1F + 'x' + C2F + 'x' + CH;
+const layoutValid = (i, a, b) => Number.isInteger(i) && Number.isInteger(a) && Number.isInteger(b) && i >= MIN_IN && i <= MAX_IN && i % 2 === 0 && a >= 1 && a <= 16 && b >= 1 && b <= 32;
+// All layouts whose weight file would be exactly `bytes` long for N classes (used to explain or infer a mismatch).
+function findLayouts(bytes, N) {
+  const out = [];
+  for (let i = MIN_IN; i <= MAX_IN; i += 2) { const c2o = (i - 2) / 2 - 2;
+    for (let a = 1; a <= 16; a++) for (let b = 1; b <= 32; b++)
+      if ((9 * CH * a + a + 9 * a * b + b + c2o * c2o * b * N + N) * 4 === bytes) out.push([i, a, b]); }
+  return out;
+}
+const PARAM_ORDER = ['c1w', 'c1b', 'c2w', 'c2b', 'ow', 'ob']; // file write order in mySaveWeights()
+const paramSizes = N => ({ c1w: C1W, c1b: C1F, c2w: C2W, c2b: C2F, ow: FLAT * N, ob: N });
+const totalFloats = N => C1W + C1F + C2W + C2F + FLAT * N + N;
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const mc = new MessageChannel(); let tickRes = null;
+mc.port1.onmessage = () => { const r = tickRes; tickRes = null; if (r) r(); };
+const tick = () => new Promise(r => { tickRes = r; mc.port2.postMessage(0); });
+
+function clipv(v, mn = -100, mx = 100) { if (!Number.isFinite(v)) return 0; return v < mn ? mn : (v > mx ? mx : v); }
+const lrelu = x => x > 0 ? x : 0.1 * x;
+const lrd = x => x > 0 ? 1 : 0.1;
+
+function zerosFor(N) { const s = paramSizes(N), o = {}; for (const k of PARAM_ORDER) o[k] = new Float32Array(s[k]); return o; }
+
+function heInit(net) {
+  const w = net.w, fill = (a, std) => { for (let i = 0; i < a.length; i++) a[i] = (Math.random() - 0.5) * 2 * std; };
+  fill(w.c1w, Math.sqrt(2 / (9 * CH))); w.c1b.fill(0);
+  fill(w.c2w, Math.sqrt(2 / (C1F * 9)));      w.c2b.fill(0);
+  fill(w.ow, Math.sqrt(2 / FLAT));     w.ob.fill(0);
+}
+
+function makeNet(N) {
+  const net = { N, key: layoutKey(), w: zerosFor(N), g: zerosFor(N), m: zerosFor(N), v: zerosFor(N), a: {
+    c1o: new Float32Array(C1F * C1O * C1O), p1o: new Float32Array(C1F * P1O * P1O), c2o: new Float32Array(FLAT),
+    logits: new Float32Array(N), probs: new Float32Array(N), din: null, dinBuf: null,
+    dg: new Float32Array(FLAT), c2g: new Float32Array(FLAT),
+    p1g: new Float32Array(C1F * P1O * P1O), c1g: new Float32Array(C1F * C1O * C1O) } };
+  heInit(net);
+  return net;
+}
+
+// Forward pass: line-by-line port of myForwardPass(). inp is HWC RGB floats 0..1.
+// mask (optional, training only) is an inverted-dropout mask on the flattened layer.
+function forward(net, inp, mask) {
+  const w = net.w, a = net.a, N = net.N, c1o = a.c1o, p1o = a.p1o, c2o = a.c2o;
+  for (let f = 0; f < C1F; f++) {
+    const o = f * C1O * C1O, b = w.c1b[f];
+    for (let y = 0; y < C1O; y++) for (let xx = 0; xx < C1O; xx++) {
+      let s = 0;
+      for (let ky = 0; ky < 3; ky++) for (let kx = 0; kx < 3; kx++) {
+        const ip = ((y + ky) * IN + (xx + kx)) * CH, wp = f * 9 * CH + (ky * 3 + kx) * CH;
+        for (let c = 0; c < CH; c++) s += inp[ip + c] * w.c1w[wp + c];
+      }
+      c1o[o + y * C1O + xx] = lrelu(clipv(s + b));
+    }
+  }
+  for (let f = 0; f < C1F; f++) {
+    const ib = f * C1O * C1O, o = f * P1O * P1O;
+    for (let y = 0; y < P1O; y++) for (let xx = 0; xx < P1O; xx++) {
+      const i0 = ib + y * 2 * C1O + xx * 2, i2 = i0 + C1O;
+      p1o[o + y * P1O + xx] = Math.max(c1o[i0], c1o[i0 + 1], c1o[i2], c1o[i2 + 1]);
+    }
+  }
+  for (let f = 0; f < C2F; f++) {
+    const o = f * C2O * C2O, b = w.c2b[f];
+    for (let y = 0; y < C2O; y++) for (let xx = 0; xx < C2O; xx++) {
+      let s = 0;
+      for (let c = 0; c < C1F; c++) {
+        const ib = c * P1O * P1O;
+        for (let ky = 0; ky < 3; ky++) for (let kx = 0; kx < 3; kx++)
+          s += p1o[ib + (y + ky) * P1O + (xx + kx)] * w.c2w[f * 9 * C1F + c * 9 + ky * 3 + kx];
+      }
+      c2o[o + y * C2O + xx] = lrelu(clipv(s + b));
+    }
+  }
+  let din = c2o;
+  if (mask) { din = a.dinBuf || (a.dinBuf = new Float32Array(FLAT)); for (let i = 0; i < FLAT; i++) din[i] = c2o[i] * mask[i]; }
+  a.din = din;
+  for (let c = 0; c < N; c++) {
+    let s = 0; const base = c * FLAT;
+    for (let i = 0; i < FLAT; i++) s += din[i] * w.ow[base + i];
+    a.logits[c] = clipv(s + w.ob[c], -50, 50);
+  }
+  let mx = a.logits[0]; for (let i = 1; i < N; i++) mx = Math.max(mx, a.logits[i]);
+  let es = 0; for (let i = 0; i < N; i++) es += Math.exp(a.logits[i] - mx);
+  for (let i = 0; i < N; i++) a.probs[i] = Math.exp(a.logits[i] - mx) / es;
+}
+
+// Backward pass for one image. Gradients accumulate (+=) into net.g across the batch, as on the device.
+function backward(net, inp, label, mask) {
+  const w = net.w, g = net.g, a = net.a, N = net.N, p = a.probs, din = a.din, dg = a.dg;
+  dg.fill(0);
+  for (let c = 0; c < N; c++) {
+    const err = p[c] - (c === label ? 1 : 0), base = c * FLAT;
+    for (let i = 0; i < FLAT; i++) { g.ow[base + i] += err * din[i]; dg[i] += err * w.ow[base + i]; }
+    g.ob[c] += err;
+  }
+  if (mask) for (let i = 0; i < FLAT; i++) dg[i] *= mask[i];
+  const c1o = a.c1o, p1o = a.p1o, c2o = a.c2o, c2g = a.c2g, p1g = a.p1g, c1g = a.c1g;
+  for (let i = 0; i < FLAT; i++) c2g[i] = dg[i] * lrd(c2o[i]);
+  p1g.fill(0);
+  for (let f = 0; f < C2F; f++) {
+    const o = f * C2O * C2O;
+    for (let y = 0; y < C2O; y++) for (let xx = 0; xx < C2O; xx++) {
+      const gr = c2g[o + y * C2O + xx]; g.c2b[f] += gr;
+      for (let c = 0; c < C1F; c++) {
+        const ib = c * P1O * P1O;
+        for (let ky = 0; ky < 3; ky++) for (let kx = 0; kx < 3; kx++) {
+          const pi = ib + (y + ky) * P1O + (xx + kx), wi = f * 9 * C1F + c * 9 + ky * 3 + kx;
+          g.c2w[wi] += gr * p1o[pi]; p1g[pi] += gr * w.c2w[wi];
+        }
+      }
+    }
+  }
+  c1g.fill(0);
+  for (let f = 0; f < C1F; f++) {
+    const ib = f * C1O * C1O, o = f * P1O * P1O;
+    for (let y = 0; y < P1O; y++) for (let xx = 0; xx < P1O; xx++) {
+      const pv = p1o[o + y * P1O + xx], gr = p1g[o + y * P1O + xx];
+      const i0 = ib + y * 2 * C1O + xx * 2, i2 = i0 + C1O;
+      if (c1o[i0] === pv) c1g[i0] += gr;
+      if (c1o[i0 + 1] === pv) c1g[i0 + 1] += gr;
+      if (c1o[i2] === pv) c1g[i2] += gr;
+      if (c1o[i2 + 1] === pv) c1g[i2 + 1] += gr;
+    }
+  }
+  for (let i = 0; i < C1F * C1O * C1O; i++) c1g[i] *= lrd(c1o[i]);
+  for (let f = 0; f < C1F; f++) {
+    const o = f * C1O * C1O;
+    for (let y = 0; y < C1O; y++) for (let xx = 0; xx < C1O; xx++) {
+      const gr = c1g[o + y * C1O + xx]; g.c1b[f] += gr;
+      for (let ky = 0; ky < 3; ky++) for (let kx = 0; kx < 3; kx++) {
+        const ip = ((y + ky) * IN + (xx + kx)) * CH, wp = f * 9 * CH + (ky * 3 + kx) * CH;
+        for (let c = 0; c < CH; c++) g.c1w[wp + c] += gr * inp[ip + c];
+      }
+    }
+  }
+}
+
+// Adam exactly as myAdamUpdate(): b1 .9, b2 .999, eps 1e-6, weights clipped to +-10.
+// Browser safety additions: non-finite gradients count as 0, and each single update is bounded by maxStep.
+function adamUpdate(wt, gr, m, v, step, lr, maxStep) {
+  const b1 = 0.9, b2 = 0.999, eps = 1e-6;
+  const lrt = lr * Math.sqrt(1 - Math.pow(b2, step)) / (1 - Math.pow(b1, step));
+  for (let i = 0; i < wt.length; i++) {
+    let gi = gr[i]; if (!Number.isFinite(gi)) gi = 0;
+    m[i] = b1 * m[i] + (1 - b1) * gi;
+    v[i] = b2 * v[i] + (1 - b2) * gi * gi;
+    let d = lrt * m[i] / (Math.sqrt(v[i]) + eps);
+    if (!Number.isFinite(d)) d = 0;
+    if (d > maxStep) d = maxStep; else if (d < -maxStep) d = -maxStep;
+    wt[i] = clipv(wt[i] - d, -10, 10);
+  }
+}
+function updateWeights(net, step, lr, maxStep) { for (const k of PARAM_ORDER) adamUpdate(net.w[k], net.g[k], net.m[k], net.v[k], step, lr, maxStep); }
+function zeroGrad(net) { for (const k of PARAM_ORDER) net.g[k].fill(0); }
+
+function argmax(p) { let b = 0; for (let i = 1; i < p.length; i++) if (p[i] > p[b]) b = i; return b; }
+function weightsFinite(net) { for (const k of PARAM_ORDER) { const a = net.w[k]; for (let i = 0; i < a.length; i++) if (!Number.isFinite(a[i])) return false; } return true; }
+
+function serializeWeights(net) {
+  const buf = new ArrayBuffer(totalFloats(net.N) * 4), dv = new DataView(buf); let o = 0;
+  for (const k of PARAM_ORDER) { const a = net.w[k]; for (let i = 0; i < a.length; i++, o += 4) dv.setFloat32(o, a[i], true); }
+  return buf;
+}
+function parseWeights(net, buf) {
+  const dv = new DataView(buf); let o = 0;
+  for (const k of PARAM_ORDER) { const a = net.w[k]; for (let i = 0; i < a.length; i++, o += 4) a[i] = dv.getFloat32(o, true); }
+}
+
+// RGBA (240x240) -> HWC RGB bytes 0..255 with the firmware's nearest-pixel sampling.
+// Images are cached as bytes (4x smaller than floats, matters at large input sizes) and turned into floats when used.
+function rgbaToBytes(d) {
+  const out = new Uint8Array(IN * IN * CH);
+  for (let y = 0; y < IN; y++) for (let x = 0; x < IN; x++) {
+    const si = (LUT[y] * SRC + LUT[x]) * 4, di = (y * IN + x) * CH;
+    if (CH === 1) out[di] = (77 * d[si] + 150 * d[si + 1] + 29 * d[si + 2]) >> 8;
+    else { out[di] = d[si]; out[di + 1] = d[si + 1]; out[di + 2] = d[si + 2]; }
+  }
+  return out;
+}
+// bytes -> floats 0..1. Pass `out` to reuse a buffer (training does), otherwise a new array is made.
+function bytesToFloat(u, out) {
+  out = out || new Float32Array(u.length);
+  for (let i = 0; i < u.length; i++) out[i] = u[i] / 255;
+  return out;
+}
+function rgbaToInput(d) { return bytesToFloat(rgbaToBytes(d)); }
+
+// Browser-only augmentation: horizontal flip and brightness jitter.
+function augment(x) {
+  const o = new Float32Array(x.length), flip = Math.random() < 0.5, k = 0.8 + Math.random() * 0.4;
+  for (let y = 0; y < IN; y++) for (let xx = 0; xx < IN; xx++) {
+    const si = (y * IN + (flip ? IN - 1 - xx : xx)) * CH, di = (y * IN + xx) * CH;
+    for (let c = 0; c < CH; c++) o[di + c] = Math.min(1, x[si + c] * k);
+  }
+  return o;
+}
+
+// Train/validation split. items: [{cls, path, ref}]. 'fw' mirrors the firmware: sort by path, hold out the
+// LAST N per class. 'pct': last k per class where k = pct of the smallest class (always leaves 1 to train).
+function splitData(items, N, mode, param) {
+  const sorted = items.slice().sort((a, b) => a.path < b.path ? -1 : (a.path > b.path ? 1 : 0));
+  const counts = new Array(N).fill(0); for (const it of sorted) counts[it.cls]++;
+  let skip;
+  if (mode === 'fw') skip = counts.map(c => Math.min(param, c));
+  else {
+    const present = counts.filter(c => c > 0), mn = present.length ? Math.min(...present) : 0;
+    const k = Math.round(param / 100 * mn);
+    skip = counts.map(c => Math.max(0, Math.min(k, c - 1)));
+  }
+  const train = [], val = [], seen = new Array(N).fill(0);
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const c = sorted[i].cls;
+    if (seen[c] < skip[c]) { val.push(sorted[i].ref); seen[c]++; } else train.push(sorted[i].ref);
+  }
+  return { train, val };
+}
+
+function copyObj(o) { const r = {}; for (const k of PARAM_ORDER) r[k] = o[k].slice(); return r; }
+function takeSnap(net, step) { return { w: copyObj(net.w), m: copyObj(net.m), v: copyObj(net.v), step }; }
+function restoreSnap(net, s) { for (const k of PARAM_ORDER) { net.w[k].set(s.w[k]); net.m[k].set(s.m[k]); net.v[k].set(s.v[k]); } }
+
+// Training driver. o: {lr,batch,epochs,dropout,augment,maxStep}. h: hooks {input(s), onBatch, onEpoch, onLog, stopped(), paused()}.
+// Samples must have .cls and be already decoded (h.input returns a Float32Array that is only valid until the next h.input call).
+// Rolls back and halves lr on a non-finite loss.
+async function runTraining(net, tr, val, o, h) {
+  const total = tr.length, B = o.batch, bpe = Math.ceil(total / B);
+  let lr = o.lr, step = 0, rollbacks = 0, epoch = 1, snap = takeSnap(net, 0);
+  const mask = o.dropout > 0 ? new Float32Array(FLAT) : null;
+  const idx = Array.from({ length: total }, (_, i) => i);
+  while (epoch <= o.epochs) {
+    for (let i = total - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = idx[i]; idx[i] = idx[j]; idx[j] = t; }
+    let eLoss = 0, eOk = 0, eN = 0, bad = false;
+    for (let b = 0; b < bpe; b++) {
+      while (h.paused() && !h.stopped()) await sleep(80);
+      if (h.stopped()) return { stopped: true, epoch };
+      zeroGrad(net);
+      const s0 = b * B, s1 = Math.min(s0 + B, total); let bl = 0, ok = 0;
+      for (let i = s0; i < s1; i++) {
+        const smp = tr[idx[i]]; let x = h.input(smp); if (o.augment) x = augment(x);
+        if (mask) { const keep = 1 - o.dropout; for (let k = 0; k < FLAT; k++) mask[k] = Math.random() < keep ? 1 / keep : 0; }
+        forward(net, x, mask);
+        bl += -Math.log(Math.max(net.a.probs[smp.cls], 1e-7));
+        if (argmax(net.a.probs) === smp.cls) ok++;
+        backward(net, x, smp.cls, mask);
+        if (IN >= 128) await tick();     // large images: let the page breathe after every image
+      }
+      const n = s1 - s0, avg = bl / n; step++;
+      if (!Number.isFinite(avg)) { bad = true; break; }
+      updateWeights(net, step, lr, o.maxStep);
+      eLoss += bl; eOk += ok; eN += n;
+      if (h.onBatch) h.onBatch({ epoch, b: b + 1, bpe, loss: avg, acc: ok / n, lr });
+      await tick();
+    }
+    if (bad || !weightsFinite(net)) {
+      restoreSnap(net, snap); step = snap.step; lr /= 2; rollbacks++;
+      h.onLog('Non-finite loss in epoch ' + epoch + '. Rolled back to the last good epoch and halved the learning rate to ' + lr + '.');
+      if (rollbacks > 5) { h.onLog('Too many rollbacks. Training stopped. Lower the learning rate and try again.'); return { failed: true, epoch }; }
+      continue;
+    }
+    let vOk = 0;
+    for (const s of val) { forward(net, h.input(s)); if (argmax(net.a.probs) === s.cls) vOk++; if (IN >= 128) await tick(); }
+    snap = takeSnap(net, step);
+    h.onEpoch({ epoch, loss: eLoss / eN, tacc: eOk / eN, vacc: val.length ? vOk / val.length : null, lr });
+    epoch++;
+  }
+  return { done: true };
+}
+
+// ---- Zip (STORE writer; STORE and DEFLATE reader) ----
+const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(u8) { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = CRC[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+
+function makeZip(files) { // files: [{name, data:Uint8Array}] ; a name ending in '/' is a folder entry
+  const enc = new TextEncoder(), parts = [], cen = []; let off = 0;
+  const d = new Date(), dt = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+  const dd = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  for (const f of files) {
+    const nm = enc.encode(f.name), data = f.data, crc = crc32(data), sz = data.length;
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(8, 0, true);
+    lh.setUint16(10, dt, true); lh.setUint16(12, dd, true); lh.setUint32(14, crc, true); lh.setUint32(18, sz, true); lh.setUint32(22, sz, true);
+    lh.setUint16(26, nm.length, true); lh.setUint16(28, 0, true);
+    parts.push(lh.buffer, nm, data);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true); ch.setUint16(10, 0, true);
+    ch.setUint16(12, dt, true); ch.setUint16(14, dd, true); ch.setUint32(16, crc, true); ch.setUint32(20, sz, true); ch.setUint32(24, sz, true);
+    ch.setUint16(28, nm.length, true); ch.setUint32(42, off, true);
+    cen.push(ch.buffer, nm);
+    off += 30 + nm.length + sz;
+  }
+  const cs = cen.reduce((a, b) => a + b.byteLength, 0), end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true); end.setUint32(12, cs, true); end.setUint32(16, off, true);
+  return new Blob([...parts, ...cen, end.buffer], { type: 'application/zip' });
+}
+
+async function inflateRaw(u8) {
+  if (typeof DecompressionStream === 'undefined') throw new Error('This browser cannot read compressed zips. Re-zip with "store" (no compression) or use Chrome/Edge.');
+  const s = new Blob([u8]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return new Uint8Array(await new Response(s).arrayBuffer());
+}
+
+async function parseZip(buf) {
+  const dv = new DataView(buf), u8 = new Uint8Array(buf); let e = -1;
+  for (let i = buf.byteLength - 22; i >= Math.max(0, buf.byteLength - 65557); i--) if (dv.getUint32(i, true) === 0x06054b50) { e = i; break; }
+  if (e < 0) throw new Error('Not a zip file (no end-of-directory record).');
+  const n = dv.getUint16(e + 10, true); let p = dv.getUint32(e + 16, true); const out = [], dec = new TextDecoder();
+  for (let k = 0; k < n; k++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) throw new Error('Corrupt zip directory.');
+    const method = dv.getUint16(p + 10, true), csz = dv.getUint32(p + 20, true), nl = dv.getUint16(p + 28, true),
+          el = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true), lo = dv.getUint32(p + 42, true);
+    const name = dec.decode(u8.subarray(p + 46, p + 46 + nl)).replace(/\\/g, '/'); p += 46 + nl + el + cl;
+    if (name.endsWith('/')) { out.push({ name, data: null }); continue; }
+    const ds = lo + 30 + dv.getUint16(lo + 26, true) + dv.getUint16(lo + 28, true), raw = u8.subarray(ds, ds + csz);
+    let data;
+    if (method === 0) data = raw; else if (method === 8) data = await inflateRaw(raw); else throw new Error('Unsupported zip method ' + method + ' for ' + name);
+    out.push({ name, data });
+  }
+  return out;
+}
+
+// ---- INT8 conversion (post-training quantization). Integer math is shared with the firmware, bit for bit. ----
+function myQuantMult(m) {
+  if (!(m > 0)) return [0, 62];
+  let e = Math.floor(Math.log2(m)) + 1, mi = Math.round(m / Math.pow(2, e) * 8388608);
+  if (mi >= 8388608) { mi = 4194304; e++; }
+  return [mi, Math.min(62, Math.max(1, 23 - e))];
+}
+function myRq(acc, m, n) {
+  if (acc > 536870911 || acc < -536870911) return Number((BigInt(acc) * BigInt(m) + (1n << BigInt(n - 1))) >> BigInt(n));
+  const p = Math.pow(2, n);
+  return Math.floor((acc * m + p / 2) / p);
+}
+const myClamp8 = v => v < -128 ? -128 : (v > 127 ? 127 : v);
+function myActParams(lo, hi) {
+  lo = Math.min(lo, 0); hi = Math.max(hi, 0); if (hi - lo < 1e-6) hi = lo + 1e-6;
+  const s = (hi - lo) / 255;
+  return { s, zp: myClamp8(Math.round(-128 - lo / s)) };
+}
+function myQuantLayer(w, b, count, per, sx, zpx, op, leaky) {
+  const L = { w: new Int8Array(w.length), bias: new Int32Array(count), mp: new Int32Array(count), sp: new Int32Array(count), mn: new Int32Array(count), sn: new Int32Array(count), zp: op.zp, s: op.s, worst: 0 };
+  for (let f = 0; f < count; f++) {
+    let mx = 0; for (let k = 0; k < per; k++) mx = Math.max(mx, Math.abs(w[f * per + k]));
+    const sw = (mx || 1e-8) / 127; let sum = 0, abs = 0;
+    for (let k = 0; k < per; k++) { const v = Math.max(-127, Math.min(127, Math.round(w[f * per + k] / sw))); L.w[f * per + k] = v; sum += v; abs += Math.abs(v); }
+    L.bias[f] = Math.round(b[f] / (sx * sw)) - zpx * sum;
+    const M = sx * sw / op.s, p = myQuantMult(M), n = myQuantMult(leaky ? 0.1 * M : M);
+    L.mp[f] = p[0]; L.sp[f] = p[1]; L.mn[f] = n[0]; L.sn[f] = n[1];
+    L.worst = Math.max(L.worst, abs * 128 + Math.abs(L.bias[f]));
+  }
+  return L;
+}
+function myQuantize(net, c) {
+  const a1 = myActParams(c.lo1, c.hi1), a2 = myActParams(c.lo2, c.hi2), a3 = myActParams(c.lo3, c.hi3);
+  return { N: net.N, key: layoutKey(), IN, CH, C1F, C2F, rng: c, calib: 0, testBytes: null,
+    c1: myQuantLayer(net.w.c1w, net.w.c1b, C1F, 9 * CH, 1 / 255, -128, a1, true),
+    c2: myQuantLayer(net.w.c2w, net.w.c2b, C2F, 9 * C1F, a1.s, a1.zp, a2, true),
+    d: myQuantLayer(net.w.ow, net.w.ob, net.N, FLAT, a2.s, a2.zp, a3, false) };
+}
+function myForwardInt8(q, xb) {
+  const N = q.N, x = new Int8Array(xb.length), c1 = new Int8Array(C1F * C1O * C1O), p1 = new Int8Array(C1F * P1O * P1O), c2 = new Int8Array(FLAT), lg = new Int8Array(N);
+  const L1 = q.c1, L2 = q.c2, D = q.d, st = 9 * CH;
+  for (let i = 0; i < xb.length; i++) x[i] = xb[i] - 128;
+  for (let f = 0; f < C1F; f++) for (let y = 0; y < C1O; y++) for (let xx = 0; xx < C1O; xx++) {
+    let a = L1.bias[f];
+    for (let ky = 0; ky < 3; ky++) for (let kx = 0; kx < 3; kx++) {
+      const ip = ((y + ky) * IN + xx + kx) * CH, wp = f * st + (ky * 3 + kx) * CH;
+      for (let c = 0; c < CH; c++) a += x[ip + c] * L1.w[wp + c];
+    }
+    c1[f * C1O * C1O + y * C1O + xx] = myClamp8(L1.zp + (a >= 0 ? myRq(a, L1.mp[f], L1.sp[f]) : myRq(a, L1.mn[f], L1.sn[f])));
+  }
+  for (let f = 0; f < C1F; f++) for (let y = 0; y < P1O; y++) for (let xx = 0; xx < P1O; xx++) {
+    const i0 = f * C1O * C1O + y * 2 * C1O + xx * 2, i2 = i0 + C1O;
+    p1[f * P1O * P1O + y * P1O + xx] = Math.max(c1[i0], c1[i0 + 1], c1[i2], c1[i2 + 1]);
+  }
+  for (let f = 0; f < C2F; f++) for (let y = 0; y < C2O; y++) for (let xx = 0; xx < C2O; xx++) {
+    let a = L2.bias[f];
+    for (let c = 0; c < C1F; c++) for (let ky = 0; ky < 3; ky++) for (let kx = 0; kx < 3; kx++)
+      a += p1[c * P1O * P1O + (y + ky) * P1O + xx + kx] * L2.w[f * 9 * C1F + c * 9 + ky * 3 + kx];
+    c2[f * C2O * C2O + y * C2O + xx] = myClamp8(L2.zp + (a >= 0 ? myRq(a, L2.mp[f], L2.sp[f]) : myRq(a, L2.mn[f], L2.sn[f])));
+  }
+  const real = new Float32Array(N), probs = new Float32Array(N); let mx = -Infinity, es = 0;
+  for (let c = 0; c < N; c++) {
+    let a = D.bias[c]; const base = c * FLAT;
+    for (let i = 0; i < FLAT; i++) a += c2[i] * D.w[base + i];
+    lg[c] = myClamp8(D.zp + myRq(a, D.mp[c], D.sp[c]));
+    real[c] = (lg[c] - D.zp) * D.s; if (real[c] > mx) mx = real[c];
+  }
+  for (let c = 0; c < N; c++) es += Math.exp(real[c] - mx);
+  for (let c = 0; c < N; c++) probs[c] = Math.exp(real[c] - mx) / es;
+  return { lg, probs, real, c2 };
+}
+function myInt8Blob(q) {
+  const lay = [q.c1, q.c2, q.d], tb = q.testBytes, lg = myForwardInt8(q, tb).lg;
+  let size = 32 + tb.length + q.N; for (const L of lay) size += L.w.length + L.bias.length * 20 + 4;
+  const buf = new ArrayBuffer(size), dv = new DataView(buf), u8 = new Uint8Array(buf); let o = 32;
+  u8.set([87, 73, 56, 49], 0); dv.setUint16(4, 1, true); dv.setUint16(6, q.IN, true); u8[8] = q.CH; u8[9] = q.C1F; u8[10] = q.C2F; u8[11] = q.N;
+  dv.setFloat32(12, q.d.s, true); dv.setInt32(16, q.d.zp, true);
+  for (const L of lay) {
+    new Int8Array(buf, o, L.w.length).set(L.w); o += L.w.length;
+    for (const a of [L.bias, L.mp, L.sp, L.mn, L.sn]) for (let i = 0; i < a.length; i++, o += 4) dv.setInt32(o, a[i], true);
+    dv.setInt32(o, L.zp, true); o += 4;
+  }
+  u8.set(tb, o); o += tb.length; new Int8Array(buf, o, q.N).set(lg);
+  return buf;
+}
+
+// ---- Read a WI81 file (the same bytes myInt8Blob writes) back into a model ----
+function myParseInt8(buf) {
+  const u8 = new Uint8Array(buf), dv = new DataView(buf);
+  if (buf.byteLength < 32 || String.fromCharCode(u8[0], u8[1], u8[2], u8[3]) !== 'WI81') return { err: 'not a WI81 model file' };
+  const inS = dv.getUint16(6, true), ch = u8[8], a = u8[9], b = u8[10], n = u8[11];
+  if (!layoutValid(inS, a, b) || (ch !== 1 && ch !== 3) || n < 1) return { err: 'the header holds an impossible layout' };
+  const c2o = (inS - 2) / 2 - 2, flat = c2o * c2o * b;
+  const want = 32 + (a * 9 * ch + a * 20 + 4) + (b * 9 * a + b * 20 + 4) + (flat * n + n * 20 + 4) + inS * inS * ch + n;
+  if (want !== buf.byteLength) return { err: 'file is ' + buf.byteLength + ' bytes but its own header needs ' + want + ' bytes' };
+  let o = 32;
+  const layer = (wCount, count) => {
+    const L = { w: new Int8Array(buf.slice(o, o + wCount)), bias: new Int32Array(count), mp: new Int32Array(count), sp: new Int32Array(count), mn: new Int32Array(count), sn: new Int32Array(count), zp: 0, s: 1, worst: 0 };
+    o += wCount;
+    for (const arr of [L.bias, L.mp, L.sp, L.mn, L.sn]) for (let i = 0; i < count; i++, o += 4) arr[i] = dv.getInt32(o, true);
+    L.zp = dv.getInt32(o, true); o += 4;
+    return L;
+  };
+  const c1 = layer(a * 9 * ch, a), c2 = layer(b * 9 * a, b), d = layer(flat * n, n);
+  d.s = dv.getFloat32(12, true);
+  const testBytes = Uint8Array.from(u8.subarray(o, o + inS * inS * ch));
+  return { q: { N: n, key: inS + 'x' + a + 'x' + b + 'x' + ch, IN: inS, CH: ch, C1F: a, C2F: b, rng: null, calib: 0, fromFile: true, testBytes, testName: 'stored in the file', c1, c2, d } };
+}
+
+// Puts a loaded INT8 file into memory. The page layout follows the file only when no float model fixes it.
+function myApplyInt8(buf) {
+  const r = myParseInt8(buf);
+  if (r.err) { state.q = null; state.myInt8Note = 'INT8 file refused: ' + r.err + '.'; return; }
+  const q = r.q;
+  if (q.N !== state.classes.length) { state.q = null; state.myInt8Note = 'INT8 file refused: it has ' + q.N + ' classes but the page has ' + state.classes.length + '.'; return; }
+  if (q.key !== layoutKey()) {
+    if (state.net && state.wStatus !== 'none' && state.wStatus !== 'refused') { state.q = null; state.myInt8Note = 'INT8 file refused: its layout ' + q.key + ' differs from the float model ' + layoutKey() + '.'; return; }
+    setLayout(q.IN, q.C1F, q.C2F, q.CH); syncLayoutControls(); state.samples.forEach(s => s.px = null);
+  }
+  state.q = q; state.i8 = null; state.myInt8Note = 'Loaded header/myWeightsInt8.bin (' + buf.byteLength + ' bytes, layout ' + q.key + ').';
+}
+
+// ---- Which models can run right now ----
+function myHasEngine(e) {
+  if (e === 'int8') return !!(state.q && state.q.key === layoutKey() && state.q.N === state.classes.length);
+  return hasModel();
+}
+setLayout(64, 4, 8);
+/* ==CORE END== */
+
+
+// ======================================================================
+//  UI
+// ======================================================================
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const MAX_STEP = 0.05;   // browser safety: no single weight update larger than this
+
+const state = {
+  mode: null, root: null, srcName: '', classes: [], samples: [], skipped: 0,
+  net: null, wStatus: 'none', wNote: '', dirty: false, hadConfig: false, zipHadWeights: false,
+  stream: null, live: false, insp: null, wrong: [], cm: null, evalStale: false, evalCount: 0,
+  myInt8Note: '', myMs: { float: 0, int8: 0 }, openCls: new Set(), marks: new Set(), training: false, stop: false, pause: false, hist: { loss: [], tacc: [], vacc: [] }, epochsPlanned: 20
+};
+const heat = { agg: 'max', overlay: true };
+const pathOf = s => '/images/' + state.classes[s.cls] + '/' + s.name;
+
+function log(m) {
+  const c = $('console'); c.value += '[' + new Date().toLocaleTimeString() + '] ' + m + '\n';
+  if (c.value.length > 60000) c.value = c.value.slice(-40000);
+  c.scrollTop = c.scrollHeight;
+}
+
+// ---------- image decode (same path as the firmware: 240x240 JPEG -> RGB -> nearest resample) ----------
+const scratch = document.createElement('canvas'); scratch.width = scratch.height = SRC;
+const sctx = scratch.getContext('2d', { willReadFrequently: true });
+const loadImg = url => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('image decode failed')); i.src = url; });
+let warnedSize = false;
+async function decodeBlob(blob) {
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = await loadImg(url);
+    if ((img.naturalWidth !== SRC || img.naturalHeight !== SRC) && !warnedSize) { warnedSize = true; log('Note: an image is ' + img.naturalWidth + 'x' + img.naturalHeight + ', not 240x240. It is scaled to 240x240 first. Device images are always 240x240.'); }
+    sctx.clearRect(0, 0, SRC, SRC); sctx.drawImage(img, 0, 0, SRC, SRC);
+    return sctx.getImageData(0, 0, SRC, SRC).data;
+  } finally { URL.revokeObjectURL(url); }
+}
+// s.px caches the resized image as bytes. getBytes decodes once; getInput returns a fresh float array each call.
+async function getBytes(s) { if (!s.px) s.px = rgbaToBytes(await decodeBlob(s.blob)); return s.px; }
+async function getInput(s) { return bytesToFloat(await getBytes(s)); }
+
+// ---------- data model helpers ----------
+function addSample(cls, name, blob) { const s = { cls, name, blob, url: URL.createObjectURL(blob), px: null }; state.samples.push(s); return s; }
+function counts() { const c = new Array(state.classes.length).fill(0); for (const s of state.samples) c[s.cls]++; return c; }
+function clearData() {
+  for (const s of state.samples) URL.revokeObjectURL(s.url);
+  Object.assign(state, { marks: new Set(), samples: [], classes: [], q: null, i8: null, net: null, wStatus: 'none', wNote: '', dirty: false, hadConfig: false, zipHadWeights: false, skipped: 0, wrong: [], cm: null, evalStale: false, insp: null });
+  state.hist = { loss: [], tacc: [], vacc: [] };
+}
+function resetModel() { state.q = null; state.i8 = null; state.net = null; state.wStatus = 'none'; state.wNote = ''; state.dirty = false; state.cm = null; state.wrong = []; }
+function ensureNet() { const N = state.classes.length; if (!state.net || state.net.N !== N) { state.net = makeNet(N); state.wStatus = 'none'; } return state.net; }
+function hasModel() { return state.net && state.net.N === state.classes.length && state.net.key === layoutKey() && state.wStatus !== 'none' && state.wStatus !== 'refused'; }
+
+function splitParams() { const mode = $('valMode').value, v = parseFloat($('valAmt').value); return { mode, p: Math.max(0, Number.isFinite(v) ? v : 0) }; }
+function currentSplit() {
+  const { mode, p } = splitParams();
+  return splitData(state.samples.map(s => ({ cls: s.cls, path: pathOf(s), ref: s })), state.classes.length, mode, mode === 'fw' ? Math.floor(p) : p);
+}
+
+// ---------- weights ----------
+function applyWeights(buf) {
+  const N = state.classes.length;
+  if (N < 1) { state.wStatus = 'refused'; state.wNote = 'A weights file was found but there are no classes, so its size cannot be checked.'; return; }
+  let exp = totalFloats(N) * 4;
+  if (buf.byteLength !== exp) {
+    const c = findLayouts(buf.byteLength, N);
+    if (c.length === 1) {
+      const from = layoutKey(); setLayout(c[0][0], c[0][1], c[0][2]); syncLayoutControls(); state.samples.forEach(s => s.px = null);
+      log('Layout changed from ' + from + ' to ' + layoutKey() + ' (input x conv1 x conv2): it is the only layout whose weight file size fits.');
+      exp = totalFloats(N) * 4;
+    } else {
+      state.wStatus = 'refused';
+      state.wNote = 'Refused: myWeights.bin is ' + buf.byteLength + ' bytes but the current layout (input ' + IN + ', filters ' + C1F + '/' + C2F + ') with ' + N + ' classes needs ' + exp + ' bytes. ' +
+        (c.length ? 'Layouts that fit this file: ' + c.slice(0, 4).map(x => 'input ' + x[0] + ', filters ' + x[1] + '/' + x[2]).join('; ') + '. Set one of them in section 3, then load again.' : 'No layout on this page fits that size, so the class count is probably different.');
+      return;
+    }
+  }
+  const net = makeNet(N); parseWeights(net, buf);
+  if (!weightsFinite(net)) { state.wStatus = 'refused'; state.wNote = 'Refused: myWeights.bin contains NaN or Infinity.'; return; }
+  state.net = net; state.wStatus = 'loaded'; state.wNote = 'Loaded header/myWeights.bin (' + buf.byteLength + ' bytes, size matches ' + N + ' classes, input ' + IN + ', filters ' + C1F + '/' + C2F + ').';
+}
+
+// ---------- loading ----------
+async function getFileAt(root, parts) {
+  try { let d = root; for (const p of parts.slice(0, -1)) d = await d.getDirectoryHandle(p); return await (await d.getFileHandle(parts[parts.length - 1])).getFile(); }
+  catch (e) { return null; }
+}
+
+async function pickDir() {
+  let root;
+  try { root = await window.showDirectoryPicker({ mode: 'readwrite' }); }
+  catch (e) { if (e.name !== 'AbortError') log('Folder pick failed: ' + e.message); return; }
+  try {
+    $('sourceInfo').textContent = 'Reading ' + root.name + ' ...';
+    const folders = [], items = []; let skipped = 0, imagesDir = null;
+    try { imagesDir = await root.getDirectoryHandle('images'); } catch (e) { /* none */ }
+    if (imagesDir) {
+      for await (const [name, h] of imagesDir.entries()) if (h.kind === 'directory' && !name.startsWith('.')) folders.push(name);
+      for (const name of folders) {
+        const d = await imagesDir.getDirectoryHandle(name);
+        for await (const [fn, h] of d.entries()) {
+          if (h.kind !== 'file') continue;
+          if (/\.(jpg|JPG)$/.test(fn)) items.push({ clsName: name, name: fn, blob: await h.getFile() }); else skipped++;
+        }
+      }
+    }
+    let cfg = null; const cf = await getFileAt(root, ['header', 'config.json']);
+    if (cf) { try { cfg = JSON.parse(await cf.text()); } catch (e) { log('config.json could not be parsed and was ignored.'); } }
+    const wf = await getFileAt(root, ['header', 'myWeights.bin']);
+    const qf = await getFileAt(root, ['header', 'myWeightsInt8.bin']);
+    await ingest({ mode: 'dir', root, name: root.name, folders, items, cfg, weights: wf ? await wf.arrayBuffer() : null, int8: qf ? await qf.arrayBuffer() : null, skipped, hadImagesDir: !!imagesDir });
+  } catch (e) { log('Could not read the folder: ' + e.message); $('sourceInfo').textContent = 'Could not read the folder: ' + e.message; }
+}
+
+async function loadZipFile(file) {
+  try {
+    $('sourceInfo').textContent = 'Reading ' + file.name + ' ...';
+    const entries = await parseZip(await file.arrayBuffer());
+    const folders = new Set(), items = []; let cfg = null, weights = null, int8 = null, skipped = 0, m, hadImagesDir = false;
+    for (const e of entries) {
+      if (/(^|\/)__MACOSX\//.test(e.name)) continue;
+      if ((m = e.name.match(/(?:^|\/)images\/([^\/]+)\/$/))) { folders.add(m[1]); hadImagesDir = true; continue; }
+      if ((m = e.name.match(/(?:^|\/)images\/([^\/]+)\/([^\/]+)$/))) {
+        folders.add(m[1]); hadImagesDir = true;
+        if (/\.(jpg|JPG)$/.test(m[2])) items.push({ clsName: m[1], name: m[2], blob: new Blob([e.data], { type: 'image/jpeg' }) }); else skipped++;
+        continue;
+      }
+      if (/(?:^|\/)header\/myWeights\.bin$/.test(e.name)) weights = e.data.slice().buffer;
+      else if (/(?:^|\/)header\/myWeightsInt8\.bin$/.test(e.name)) int8 = e.data.slice().buffer;
+      else if (/(?:^|\/)header\/config\.json$/.test(e.name)) { try { cfg = JSON.parse(new TextDecoder().decode(e.data)); } catch (x) { log('config.json in the zip could not be parsed and was ignored.'); } }
+    }
+    await ingest({ mode: 'zip', root: null, name: file.name, folders: [...folders], items, cfg, weights, int8, skipped, hadImagesDir });
+  } catch (e) { log('Could not read the zip: ' + e.message); $('sourceInfo').textContent = 'Could not read the zip: ' + e.message; }
+}
+
+async function ingest(src) {
+  clearData();
+  state.mode = src.mode; state.root = src.root; state.srcName = src.name; state.skipped = src.skipped; state.hadImagesDir = src.hadImagesDir;
+  let order = [];
+  if (src.cfg && Array.isArray(src.cfg.classes)) { order = src.cfg.classes.filter(c => typeof c === 'string'); state.hadConfig = true; }
+  order = order.concat(src.folders.filter(f => !order.includes(f)).sort());
+  state.classes = order;
+  if (src.cfg && layoutValid(src.cfg.input_size, src.cfg.conv1_filters, src.cfg.conv2_filters)) {
+    setLayout(src.cfg.input_size, src.cfg.conv1_filters, src.cfg.conv2_filters, src.cfg.grayscale ? 1 : 3); syncLayoutControls();
+  }
+  for (const it of src.items) addSample(order.indexOf(it.clsName), it.name, it.blob);
+  state.zipHadWeights = !!src.weights;
+  if (src.weights) applyWeights(src.weights);
+  state.myInt8Note = '';
+  if (src.int8) myApplyInt8(src.int8);
+  log('Loaded ' + src.name + ': ' + order.length + ' classes, ' + state.samples.length + ' images' + (state.skipped ? ', ' + state.skipped + ' non-.jpg files ignored' : '') + '.');
+  if (state.wNote) log(state.wNote);
+  if (state.myInt8Note) log(state.myInt8Note);
+  renderAll();
+}
+
+// ---------- rendering ----------
+function renderAll() { renderSource(); renderClasses(); renderBrowser(); renderModelInfo(); renderLayoutInfo(); updateSplitInfo(); renderEval(); drawCharts(); myRenderInt8(); }
+
+function renderSource() {
+  const c = counts(), n = state.samples.length; let h = '';
+  if (!state.mode) { $('sourceInfo').innerHTML = 'Nothing loaded yet. Pick the root of the SD card (the folder that contains <b>images</b> and <b>header</b>).'; return; }
+  h += '<div><b>' + esc(state.srcName) + '</b> - ' + (state.mode === 'dir' ? 'SD folder, changes are written to the card' : 'zip, changes stay in memory until you Save .zip') + '</div>';
+  if (!state.hadImagesDir) h += '<div class="bad">No images/ folder found. Expected images/&lt;class&gt;/img_*.jpg. You can add classes below.</div>';
+  h += '<div>Classes: ' + state.classes.length + ' (' + state.classes.map((k, i) => esc(k) + ' ' + c[i]).join(', ') + ') - ' + n + ' images</div>';
+  if (state.wStatus === 'refused') h += '<div class="bad">Weights: ' + esc(state.wNote) + '</div>';
+  else if (state.wStatus === 'loaded' || state.wStatus === 'trained') h += '<div class="ok">Weights: ' + esc(state.wNote || 'model in memory') + '</div>';
+  else h += '<div>Weights: no header/myWeights.bin found. Training starts from random He-init, like the device.</div>';
+  h += state.hadConfig ? '<div>config.json found: class order and layout are taken from it. The firmware reads the class names from it at boot.</div>'
+                       : '<div>No config.json: class folders are sorted alphabetically. Keep numeric prefixes so this matches myClassLabels[].</div>';
+  if (state.skipped) h += '<div class="warn">' + state.skipped + ' files ignored: the firmware only counts .jpg and .JPG.</div>';
+  $('sourceInfo').innerHTML = h;
+}
+
+function renderClasses() {
+  const c = counts(), sp = state.samples.length ? currentSplit() : { train: [], val: [] };
+  const tc = new Array(state.classes.length).fill(0), vc = tc.slice();
+  sp.train.forEach(s => tc[s.cls]++); sp.val.forEach(s => vc[s.cls]++);
+  const tb = $('classTable').querySelector('tbody');
+  tb.innerHTML = state.classes.length ? state.classes.map((k, i) =>
+    '<tr><td>' + esc(k) + '</td><td>' + c[i] + '</td><td>' + tc[i] + ' / ' + vc[i] + (tc[i] === 0 && c[i] > 0 ? ' <span class="bad">nothing to train on</span>' : '') +
+    '</td><td><button class="danger" data-rm="' + i + '">Remove</button></td></tr>').join('')
+    : '<tr><td colspan="4" class="note">No classes yet.</td></tr>';
+  tb.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => removeClass(+b.dataset.rm));
+  $('fwLines').textContent = '#define INPUT_SIZE ' + IN + '\n#define CONV1_FILTERS ' + C1F + '\n#define CONV2_FILTERS ' + C2F + '\n' +
+    (state.classes.length ? '#define NUM_CLASSES ' + state.classes.length + '\nString myClassLabels[NUM_CLASSES] = {' + state.classes.map(k => '"' + k + '"').join(', ') + '};' : '// add classes to get NUM_CLASSES and myClassLabels[]');
+  const sel = $('capClass'), keep = sel.value;
+  sel.innerHTML = state.classes.map((k, i) => '<option value="' + i + '">' + esc(k) + '</option>').join('');
+  if (keep && state.classes[+keep]) sel.value = keep;
+}
+
+function renderBrowser() {
+  const b = $('browser'); b.innerHTML = '';
+  const by = state.classes.map(() => []); state.samples.forEach(s => by[s.cls].push(s));
+  state.classes.forEach((k, i) => {
+    const d = document.createElement('details'); d.open = state.openCls.has(k);
+    d.ontoggle = () => { if (d.open) state.openCls.add(k); else state.openCls.delete(k); if (d.open && !d.dataset.filled) fill(); };
+    const sm = document.createElement('summary'); sm.textContent = k + ' - ' + by[i].length + ' images'; d.appendChild(sm);
+    const g = document.createElement('div'); g.className = 'thumbs'; d.appendChild(g);
+    function fill() {
+      d.dataset.filled = '1';
+      by[i].slice().sort((a, c) => a.name < c.name ? -1 : 1).forEach(s => {
+        const im = document.createElement('img'); im.src = s.url; im.loading = 'lazy'; im.alt = s.name; im.title = s.name; im.onclick = () => openInsp(s); g.appendChild(im);
+      });
+    }
+    if (d.open) fill();
+    b.appendChild(d);
+  });
+  if (!state.classes.length) b.innerHTML = '<p class="note">Load a data source to browse samples.</p>';
+}
+
+function renderModelInfo() {
+  const N = state.classes.length; let h = '';
+  h += '<div>Architecture: input ' + IN + 'x' + IN + 'x' + CH + (CH === 1 ? ' gray' : ' RGB') + ' (0..1) &rarr; conv 3x3x' + C1F + ' (leaky 0.1) &rarr; maxpool 2 &rarr; conv 3x3x' + C2F + ' (leaky 0.1) &rarr; flatten ' + FLAT + ' &rarr; dense ' + (N || 'N') + ' &rarr; softmax. The sketch must be compiled with the same INPUT_SIZE and filter counts (section 2 shows the lines).</div>';
+  if (N) h += '<div>Parameters: ' + totalFloats(N).toLocaleString() + ' floats, weight file ' + (totalFloats(N) * 4).toLocaleString() + ' bytes (' + N + ' classes)</div>';
+  h += '<div>Model in memory: ' + ({ none: 'none (random init on the next Train)', refused: 'none, weights file was refused', loaded: 'loaded from the SD card', trained: 'trained in this browser' + (state.dirty ? ', not saved yet' : ', saved') }[state.wStatus]) + '</div>';
+  if (state.wStatus === 'refused') h += '<div class="bad">' + esc(state.wNote) + '</div>';
+  $('modelInfo').innerHTML = h;
+  myRenderEngine();
+}
+
+// Rough numbers for the chosen layout: what the device needs and how fast it should run.
+// Memory follows the firmware's allocations. Speed is scaled from one measurement: 120x120, 4/8 filters, about 3 frames per second.
+function renderLayoutInfo() {
+  const N = Math.max(2, state.classes.length), f = totalFloats(N), MiB = 1048576, LIM = 7.8 * MiB;
+  const i8 = 32 + (C1W + C1F * 20 + 4) + (C2W + C2F * 20 + 4) + (FLAT * N + N * 20 + 4) + IN * IN * CH + N;
+  const infBytes = IN * IN * CH + C1F * C1O * C1O + C1F * P1O * P1O + FLAT + N + i8 + SRC * SRC * 3;
+  const macs = C1O * C1O * 9 * CH * C1F + C2O * C2O * 9 * C1F * C2F + FLAT * N;
+  const mb = v => (v / MiB).toFixed(2) + ' MB';
+  let h = '<div>Estimate for ' + N + ' classes' + (state.classes.length ? '' : ' (add classes for exact numbers)') + ', ' + (CH === 1 ? 'grayscale' : 'RGB') + ' input:</div>';
+  h += '<div>Float weights (browser, myWeights.bin): <b>' + mb(f * 4) + '</b>. INT8 file for the device: <b>' + mb(i8) + '</b> (about ' + (f * 4 / i8).toFixed(1) + 'x smaller, includes one test image).</div>';
+  const ic = infBytes > LIM ? 'bad' : (infBytes > 6.5 * MiB ? 'warn' : 'ok');
+  h += '<div>Device inference memory (PSRAM): <b class="' + ic + '">' + mb(infBytes) + '</b> of about 8 MB.</div>';
+  h += '<div>Multiply-adds per frame: <b>' + (macs / 1e6).toFixed(2) + ' million</b>. Measure the frame rate on the device and compare with the float firmware.</div>';
+  if (IN > SRC) h += '<div class="warn">Camera images are ' + SRC + 'x' + SRC + ', so ' + IN + 'x' + IN + ' only repeats pixels.</div>';
+  else if (IN === SRC) h += '<div class="ok">240x240 is the camera frame itself: every pixel is used exactly once.</div>';
+  else if (SRC % IN === 0) h += '<div class="ok">240 divided by ' + IN + ' is exactly ' + (SRC / IN) + ': clean resampling.</div>';
+  if (state.samples.length) h += '<div class="note">Browser memory for the decoded images: about ' + (state.samples.length * IN * IN * CH / MiB).toFixed(0) + ' MB (' + state.samples.length + ' images).</div>';
+  $('layoutInfo').innerHTML = h;
+}
+
+function updateSplitInfo() {
+  if (!state.samples.length) { $('splitInfo').textContent = ''; return; }
+  const sp = currentSplit(), vc = new Array(state.classes.length).fill(0); sp.val.forEach(s => vc[s.cls]++);
+  $('splitInfo').textContent = 'Train ' + sp.train.length + ' images. Validation ' + sp.val.length + ' images (' + state.classes.map((k, i) => k + ' ' + vc[i]).join(', ') + ').' +
+    (splitParams().mode === 'fw' ? ' Same images the device holds out when its VALIDATION_IMAGES is ' + Math.floor(splitParams().p) + '.' : '');
+}
+
+// ---------- class management ----------
+async function classDir(ci, create) { const img = await state.root.getDirectoryHandle('images', { create }); return img.getDirectoryHandle(state.classes[ci], { create }); }
+async function writeFile(dir, name, blob) { const w = await (await dir.getFileHandle(name, { create: true })).createWritable(); await w.write(blob); await w.close(); }
+
+async function addClass() {
+  const name = $('newClass').value.trim();
+  if (!state.mode) { alert('Load a data source first.'); return; }
+  if (!name || /[\/\\:*?"<>|]/.test(name) || name.startsWith('.')) { alert('Use a plain folder name without / \\ : * ? " < > |'); return; }
+  if (state.classes.includes(name)) { alert('That class already exists.'); return; }
+  if (state.dirty && !confirm('Adding a class changes the weight layout and discards the unsaved model in memory. Continue?')) return;
+  state.classes.push(name);
+  if (state.mode === 'dir') { try { await classDir(state.classes.length - 1, true); } catch (e) { state.classes.pop(); log('Could not create the folder: ' + e.message); return; } }
+  $('newClass').value = ''; resetModel();
+  log('Added class ' + name + '. Model in memory discarded: the weight file size changes with the class count. Update NUM_CLASSES and myClassLabels[] in the sketch.');
+  renderAll();
+}
+
+async function removeClass(i) {
+  const name = state.classes[i], n = state.samples.filter(s => s.cls === i).length;
+  if (!confirm('Remove class "' + name + '" and delete its ' + n + ' images from the ' + (state.mode === 'dir' ? 'SD card folder' : 'zip data') + '? This cannot be undone.')) return;
+  if (state.dirty && !confirm('This also discards the unsaved model in memory. Continue?')) return;
+  if (state.mode === 'dir') { try { const img = await state.root.getDirectoryHandle('images'); await img.removeEntry(name, { recursive: true }); } catch (e) { log('Could not delete the folder: ' + e.message); return; } }
+  state.samples = state.samples.filter(s => { if (s.cls === i) { URL.revokeObjectURL(s.url); return false; } if (s.cls > i) s.cls--; return true; });
+  state.classes.splice(i, 1); resetModel();
+  log('Removed class ' + name + '. Model in memory discarded.');
+  renderAll();
+}
+
+// ---------- camera ----------
+const capCanvas = document.createElement('canvas'); capCanvas.width = capCanvas.height = SRC;
+const cctx = capCanvas.getContext('2d');
+async function startCam() {
+  if (state.stream) return;
+  try { state.stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 } }, audio: false }); }
+  catch (e) { log('Camera error: ' + e.message); return; }
+  for (const v of [$('capVideo'), $('liveVideo')]) { v.srcObject = state.stream; try { await v.play(); } catch (e) { /* ignore */ } }
+  $('btnCam').textContent = 'Stop camera';
+}
+function stopCam() {
+  state.live = false; $('btnLive').textContent = 'Start live';
+  if (state.stream) state.stream.getTracks().forEach(t => t.stop());
+  state.stream = null; for (const v of [$('capVideo'), $('liveVideo')]) v.srcObject = null;
+  $('btnCam').textContent = 'Start camera';
+}
+function grabFrame() {
+  const v = $('capVideo').videoWidth ? $('capVideo') : $('liveVideo');
+  if (!v.videoWidth) return false;
+  const side = Math.min(v.videoWidth, v.videoHeight), sx = (v.videoWidth - side) / 2, sy = (v.videoHeight - side) / 2;
+  cctx.save();
+  if ($('mirror').checked) { cctx.translate(SRC, 0); cctx.scale(-1, 1); }
+  cctx.drawImage(v, sx, sy, side, side, 0, 0, SRC, SRC);
+  cctx.restore();
+  return true;
+}
+const frameBlob = () => new Promise(r => capCanvas.toBlob(r, 'image/jpeg', 0.85));
+
+async function capture() {
+  if (!state.mode) { log('Load a data source first (section 1).'); return; }
+  const ci = parseInt($('capClass').value);
+  if (!state.classes[ci]) { log('Add or pick a class first.'); return; }
+  if (!state.stream || !grabFrame()) { log('Start the camera first.'); return; }
+  const blob = await frameBlob(), name = 'img_' + Date.now() + '.jpg';
+  if (state.mode === 'dir') { try { await writeFile(await classDir(ci, true), name, blob); } catch (e) { log('Write to the SD folder failed: ' + e.message); return; } }
+  addSample(ci, name, blob); state.evalStale = true;
+  log('Captured ' + name + ' into ' + state.classes[ci] + ' (' + counts()[ci] + ' images).');
+  renderSource(); renderClasses(); renderBrowser(); renderLayoutInfo(); updateSplitInfo();
+}
+
+// ---------- heatmap ----------
+const heatCanvas = document.createElement('canvas'); heatCanvas.width = heatCanvas.height = C2O;
+function heatColor(t) {
+  const c = v => Math.max(0, Math.min(1, v));
+  return [255 * c(1.5 - Math.abs(4 * t - 3)), 255 * c(1.5 - Math.abs(4 * t - 2)), 255 * c(1.5 - Math.abs(4 * t - 1))];
+}
+function paintHeat(ctx, size, get, side) {   // get(i) -> 0..1 for each cell of a side x side map
+  heatCanvas.width = heatCanvas.height = side;
+  const hc = heatCanvas.getContext('2d'), id = hc.createImageData(side, side);
+  for (let i = 0; i < side * side; i++) { const [r, g, b] = heatColor(get(i)); id.data[i * 4] = r; id.data[i * 4 + 1] = g; id.data[i * 4 + 2] = b; id.data[i * 4 + 3] = 255; }
+  hc.putImageData(id, 0, 0);
+  ctx.save(); ctx.globalAlpha = 0.55; ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high'; ctx.drawImage(heatCanvas, 0, 0, size, size); ctx.restore();
+}
+function drawHeatOn(ctx, size, net, agg) {
+  const c = net.a.c2o, n = C2O * C2O, mp = new Float32Array(n); let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < n; i++) {
+    let m = -Infinity, s = 0;
+    for (let f = 0; f < C2F; f++) { const v = c[f * n + i]; if (v > m) m = v; s += v; }
+    mp[i] = agg === 'mean' ? s / C2F : m; if (mp[i] < lo) lo = mp[i]; if (mp[i] > hi) hi = mp[i];
+  }
+  const span = (hi - lo) || 1;
+  paintHeat(ctx, size, i => (mp[i] - lo) / span, C2O);
+}
+function barsHtml(p) {
+  const top = argmax(p);
+  return state.classes.map((k, i) => '<div class="prob"><span' + (i === top ? ' style="color:var(--acc);font-weight:600"' : '') + '>' + esc(k) + '</span><div class="bar"><i style="width:' + (p[i] * 100).toFixed(1) + '%"></i></div><span>' + (p[i] * 100).toFixed(1) + '%</span></div>').join('');
+}
+function syncHeatControls() {
+  document.querySelectorAll('.heatAgg').forEach(e => e.value = heat.agg);
+  document.querySelectorAll('.heatOverlay').forEach(e => e.checked = heat.overlay);
+}
+
+// ---------- inspector ----------
+async function openInsp(s) {
+  state.insp = s;
+  $('inspTitle').textContent = state.classes[s.cls] + ' / ' + s.name;
+  $('inspMove').innerHTML = state.classes.map((k, i) => i === s.cls ? '' : '<option value="' + i + '">' + esc(k) + '</option>').join('');
+  $('inspMoveBtn').disabled = state.classes.length < 2;
+  if (!$('insp').open) $('insp').showModal();
+  await drawInsp();
+}
+async function drawInsp() {
+  const s = state.insp; if (!s || !$('insp').open) return;
+  const cv = $('inspCanvas'), ctx = cv.getContext('2d');
+  const img = await loadImg(s.url);
+  ctx.imageSmoothingEnabled = false; ctx.clearRect(0, 0, cv.width, cv.height); ctx.drawImage(img, 0, 0, cv.width, cv.height);
+  if (state.net && state.net.N === state.classes.length && state.net.key === layoutKey() && state.wStatus !== 'none' && state.wStatus !== 'refused') {
+    forward(state.net, await getInput(s));
+    if (heat.overlay) drawHeatOn(ctx, cv.width, state.net, heat.agg);
+    $('inspProbs').innerHTML = barsHtml(state.net.a.probs);
+  } else $('inspProbs').innerHTML = '<p class="note">No model in memory. Train or load weights to see predictions and the heatmap.</p>';
+}
+async function deleteSample(s) {
+  if (!confirm('Delete ' + state.classes[s.cls] + '/' + s.name + ' from the ' + (state.mode === 'dir' ? 'SD card folder' : 'zip data') + '? This cannot be undone.')) return;
+  if (state.mode === 'dir') { try { await (await classDir(s.cls, false)).removeEntry(s.name); } catch (e) { log('Delete failed: ' + e.message); return; } }
+  URL.revokeObjectURL(s.url); state.samples = state.samples.filter(x => x !== s);
+  state.wrong = state.wrong.filter(w => w.s !== s); state.evalStale = true;
+  log('Deleted ' + s.name + '.'); afterEdit();
+}
+async function moveSample(s, to) {
+  if (!state.classes[to] || to === s.cls) return;
+  let name = s.name;
+  if (state.mode === 'dir') {
+    try {
+      const dst = await classDir(to, true);
+      try { await dst.getFileHandle(name); name = name.replace(/\.(jpg|JPG)$/, '') + '_m.jpg'; } catch (e) { /* free */ }
+      await writeFile(dst, name, s.blob);
+      await (await classDir(s.cls, false)).removeEntry(s.name);
+    } catch (e) { log('Move failed: ' + e.message); return; }
+  }
+  const from = state.classes[s.cls]; s.cls = to; s.name = name; state.evalStale = true;
+  const w = state.wrong.find(x => x.s === s); if (w) state.wrong = state.wrong.filter(x => x !== w);
+  log('Moved ' + name + ' from ' + from + ' to ' + state.classes[to] + '.'); afterEdit();
+}
+function afterEdit() { $('insp').close(); state.insp = null; renderSource(); renderClasses(); renderBrowser(); renderLayoutInfo(); updateSplitInfo(); renderEval(); }
+
+// ---------- parity self-test ----------
+async function parity(s) {
+  if (!hasModel()) { log('Parity: no model in memory. Train or load weights first.'); return; }
+  s = s || state.insp || state.samples[0];
+  if (!s) { log('Parity: no samples loaded.'); return; }
+  const x = await getInput(s), net = state.net; forward(net, x);
+  const p = net.a.probs, pr = argmax(p), ctr = ((IN / 2) * IN + IN / 2) * CH;
+  log('Parity sample ' + pathOf(s) + ' (true class ' + state.classes[s.cls] + ')');
+  log('  input pixel[0] RGB ' + Array.from(x.slice(0, CH)).map(v => v.toFixed(4)).join(' ') + ' | centre pixel RGB ' + Array.from(x.slice(ctr, ctr + CH)).map(v => v.toFixed(4)).join(' '));
+  log('  logits (clipped dense output): ' + Array.from(net.a.logits).map(v => v.toFixed(4)).join(' '));
+  log('  Current Pred: ' + state.classes[pr] + ' (' + (p[pr] * 100).toFixed(1) + '%) | All:' + Array.from(p).map(v => ' ' + (v * 100).toFixed(0) + '%').join(''));
+}
+
+// ---------- charts ----------
+function drawChart(cv, title, series, ymaxFixed, isPct) {
+  const ctx = cv.getContext('2d'), W = cv.width, H = cv.height, pl = 46, pr = 12, pt = 26, pb = 22, n = Math.max(state.epochsPlanned, 2);
+  ctx.fillStyle = '#0f1319'; ctx.fillRect(0, 0, W, H);
+  let ymax = ymaxFixed || 0.01;
+  if (!ymaxFixed) for (const s of series) for (const v of s.data) if (v != null && Number.isFinite(v)) ymax = Math.max(ymax, v);
+  if (!ymaxFixed) ymax *= 1.1;
+  ctx.font = '11px sans-serif'; ctx.fillStyle = '#8b9aac'; ctx.strokeStyle = '#2c3947'; ctx.lineWidth = 1;
+  for (let g = 0; g <= 4; g++) {
+    const y = pt + (H - pt - pb) * (1 - g / 4); ctx.beginPath(); ctx.moveTo(pl, y); ctx.lineTo(W - pr, y); ctx.stroke();
+    const val = ymax * g / 4; ctx.fillText(isPct ? Math.round(val * 100) + '%' : val.toFixed(2), 4, y + 4);
+  }
+  ctx.fillText('epoch', W - 44, H - 6); ctx.fillText('1', pl, H - 6); ctx.fillText(String(n), W - pr - 18 - 14, H - 6);
+  let lx = pl; ctx.fillText(title, 4, 14);
+  for (const s of series) {
+    ctx.strokeStyle = s.color; ctx.fillStyle = s.color; ctx.lineWidth = 2; ctx.beginPath(); let started = false;
+    s.data.forEach((v, i) => {
+      if (v == null || !Number.isFinite(v)) return;
+      const x = pl + (W - pl - pr) * i / (n - 1), y = pt + (H - pt - pb) * (1 - v / ymax);
+      if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    s.data.forEach((v, i) => { if (v == null || !Number.isFinite(v)) return; ctx.beginPath(); ctx.arc(pl + (W - pl - pr) * i / (n - 1), pt + (H - pt - pb) * (1 - v / ymax), 3, 0, 7); ctx.fill(); });
+    ctx.fillText(s.label, W - pr - 150 + (lx - pl), 14); lx += 0; ctx.fillRect(W - pr - 165 + (lx - pl), 8, 10, 3); lx += 0;
+    ctx.fillStyle = '#8b9aac';
+  }
+}
+function drawCharts() {
+  const h = state.hist;
+  drawChart($('chLoss'), 'Training loss per epoch', [{ data: h.loss, color: '#e9b44c', label: 'loss' }], 0, false);
+  drawChart($('chAcc'), 'Accuracy per epoch', [{ data: h.tacc, color: '#66d1bd', label: 'train' }, { data: h.vacc, color: '#ef6b73', label: 'validation' }], 1, true);
+}
+
+// ---------- training UI ----------
+async function onTrain() {
+  if (state.training) return;
+  const N = state.classes.length;
+  if (N < 2) { alert('Need at least 2 classes with images. Load an SD card folder or zip first.'); return; }
+  const o = { lr: parseFloat($('lr').value), batch: parseInt($('batch').value), epochs: parseInt($('epochs').value), dropout: parseFloat($('dropout').value) || 0, augment: $('augment').checked, maxStep: MAX_STEP };
+  if (!(o.lr > 0) || !(o.batch >= 1) || !(o.epochs >= 1) || o.dropout < 0 || o.dropout >= 1) { alert('Check the training settings: learning rate > 0, batch >= 1, epochs >= 1, dropout 0 to 0.8.'); return; }
+  const cont = $('cont').checked && hasModel() && state.net.N === N;
+  if (!cont && state.net && state.dirty && !confirm('Starting fresh discards the unsaved model in memory. Continue?')) return;
+  const sp = currentSplit();
+  if (!sp.train.length) { alert('No training images after the validation hold-out. Add images or lower the validation amount.'); return; }
+  const empty = state.classes.filter((k, i) => !sp.train.some(s => s.cls === i));
+  if (empty.length) log('Warning: no training images for ' + empty.join(', ') + '. The model cannot learn those classes.');
+  state.training = true; state.stop = false; state.pause = false; state.q = null; state.i8 = null; setTrainButtons(); myRenderInt8();
+  state.hist = { loss: [], tacc: [], vacc: [] }; state.epochsPlanned = o.epochs; drawCharts();
+  try {
+    const all = sp.train.concat(sp.val);
+    for (let i = 0; i < all.length; i++) {
+      await getBytes(all[i]);
+      if (i % 10 === 0) { $('trainStatus').textContent = 'Decoding images ' + (i + 1) + ' / ' + all.length + ' ...'; await tick(); }
+    }
+    if (!cont) { state.net = makeNet(N); log('Started from random He-init weights.'); } else log('Continuing from the weights in memory.');
+    const net = state.net; for (const k of PARAM_ORDER) { net.m[k].fill(0); net.v[k].fill(0); }
+    const trainBuf = new Float32Array(IN * IN * CH);   // one reusable float input; the layout cannot change while training
+    log('Train ' + sp.train.length + ' images, validation ' + sp.val.length + ', batch ' + o.batch + ', ' + o.epochs + ' epochs, lr ' + o.lr + (o.augment ? ', augmentation on' : '') + (o.dropout ? ', dropout ' + o.dropout : '') + '.');
+    const t0 = performance.now();
+    const res = await runTraining(net, sp.train, sp.val, o, {
+      input: s => bytesToFloat(s.px, trainBuf),
+      stopped: () => state.stop, paused: () => state.pause,
+      onLog: m => log(m),
+      onBatch: b => { $('trainStatus').textContent = 'Epoch ' + b.epoch + '/' + o.epochs + '  batch ' + b.b + '/' + b.bpe + '  loss ' + b.loss.toFixed(4) + '  batch acc ' + Math.round(b.acc * 100) + '%  lr ' + b.lr; },
+      onEpoch: e => {
+        state.hist.loss.push(e.loss); state.hist.tacc.push(e.tacc); state.hist.vacc.push(e.vacc); drawCharts();
+        log('Epoch ' + e.epoch + '/' + o.epochs + '  loss ' + e.loss.toFixed(4) + '  train acc ' + (e.tacc * 100).toFixed(1) + '%' + (e.vacc == null ? '' : '  val acc ' + (e.vacc * 100).toFixed(1) + '%'));
+      }
+    });
+    state.wStatus = 'trained'; state.dirty = true; state.wNote = 'Trained in this browser (not saved yet).'; state.evalStale = false;
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    $('trainStatus').textContent = (res.stopped ? 'Stopped' : (res.failed ? 'Stopped after repeated non-finite loss' : 'Training complete')) + ' in ' + secs + ' s. Model is in memory; save it in section 6.';
+    log($('trainStatus').textContent);
+    renderSource(); renderModelInfo(); renderClasses();
+    await runEval();
+  } catch (e) { log('Training error: ' + e.message); $('trainStatus').textContent = 'Training error: ' + e.message; }
+  state.training = false; state.pause = false; setTrainButtons();
+}
+function setTrainButtons() {
+  ['inSize', 'inSizeNum', 'c1f', 'c2f', 'gray'].forEach(id => $(id).disabled = state.training);
+  $('btnTrain').disabled = state.training; $('btnPause').disabled = !state.training; $('btnStop').disabled = !state.training;
+  $('btnPause').textContent = state.pause ? 'Resume' : 'Pause';
+}
+
+// ---------- evaluation ----------
+async function runEval() {
+  if (!hasModel()) { $('evalNote').textContent = 'No model in memory yet. Train, or load a folder that has header/myWeights.bin.'; return; }
+  let which = $('evalSet').value; const sp = currentSplit(); let set = which === 'val' ? sp.val : state.samples;
+  if (which === 'val' && !set.length) { set = state.samples; which = 'all'; log('No validation images, evaluating on all images instead.'); }
+  const N = state.classes.length, cm = Array.from({ length: N }, () => new Array(N).fill(0)), wrong = [];
+  const buf = new Float32Array(IN * IN * CH);
+  for (let i = 0; i < set.length; i++) {
+    const s = set[i]; forward(state.net, bytesToFloat(await getBytes(s), buf));
+    const p = argmax(state.net.a.probs); cm[s.cls][p]++;
+    if (p !== s.cls) wrong.push({ s, pred: p, conf: state.net.a.probs[p] });
+    if (IN >= 128 || i % 25 === 24) await tick();
+  }
+  state.cm = { cm, which, n: set.length, valCounts: countBy(sp.val), allCounts: counts() }; state.wrong = wrong; state.evalStale = false;
+  renderEval();
+}
+const countBy = arr => { const c = new Array(state.classes.length).fill(0); arr.forEach(s => c[s.cls]++); return c; };
+
+function renderEval() {
+  const N = state.classes.length, E = state.cm;
+  if (!E || E.cm.length !== N) { $('cmWrap').innerHTML = ''; $('pcWrap').innerHTML = ''; $('pcWarn').innerHTML = ''; $('wrongGal').innerHTML = ''; if (!E) $('evalNote').textContent = hasModel() ? 'No evaluation yet. Press Update evaluation.' : 'No evaluation yet. It runs automatically when training ends.'; return; }
+  const cm = E.cm; let ok = 0; cm.forEach((r, i) => ok += r[i]);
+  $('evalNote').innerHTML = 'Evaluated ' + E.n + ' ' + (E.which === 'val' ? 'validation' : 'total') + ' images: ' + ok + ' correct (' + (E.n ? (100 * ok / E.n).toFixed(1) : '0') + '%). Rows are the true class, columns the predicted class.' +
+    (state.evalStale ? ' <span class="warn">The dataset changed since this evaluation. Press Update evaluation.</span>' : '') +
+    (E.which === 'val' && E.n < 30 ? ' <span class="warn">Only ' + E.n + ' validation images, so percentages are coarse.</span>' : '');
+  let h = '<table class="cm"><thead><tr><th>true \\ pred</th>' + state.classes.map(k => '<th>' + esc(k) + '</th>').join('') + '</tr></thead><tbody>';
+  cm.forEach((row, i) => {
+    const sum = row.reduce((a, b) => a + b, 0);
+    h += '<tr><th>' + esc(state.classes[i]) + '</th>' + row.map((v, j) => '<td class="' + (i === j ? 'diag' : '') + '" style="background:rgba(' + (i === j ? '102,209,189' : '239,107,115') + ',' + (sum ? (0.55 * v / sum).toFixed(2) : 0) + ')">' + v + '</td>').join('') + '</tr>';
+  });
+  $('cmWrap').innerHTML = h + '</tbody></table>';
+  let t = '<table><thead><tr><th>Class</th><th>Images (all)</th><th>Evaluated</th><th>Precision</th><th>Recall</th></tr></thead><tbody>';
+  const allc = counts(), warn = [];
+  for (let i = 0; i < N; i++) {
+    const tp = cm[i][i], rowSum = cm[i].reduce((a, b) => a + b, 0); let colSum = 0; for (let r = 0; r < N; r++) colSum += cm[r][i];
+    t += '<tr><td>' + esc(state.classes[i]) + '</td><td>' + allc[i] + '</td><td>' + rowSum + '</td><td>' + (colSum ? (100 * tp / colSum).toFixed(0) + '%' : '-') + '</td><td>' + (rowSum ? (100 * tp / rowSum).toFixed(0) + '%' : '-') + '</td></tr>';
+    if (allc[i] < 10) warn.push('<b>' + esc(state.classes[i]) + '</b> has only ' + allc[i] + ' images. Aim for 20 or more per class.');
+  }
+  const pos = allc.filter(c => c > 0);
+  if (pos.length > 1 && Math.max(...pos) > 3 * Math.min(...pos)) warn.push('Classes are imbalanced (' + Math.min(...pos) + ' to ' + Math.max(...pos) + ' images). The model will favour the big classes.');
+  $('pcWrap').innerHTML = t + '</tbody></table>';
+  $('pcWarn').innerHTML = warn.map(w => '<p class="warn">' + w + '</p>').join('');
+  const g = $('wrongGal'); g.innerHTML = '';
+  if (!state.wrong.length) g.innerHTML = '<p class="note">No misclassified images in this evaluation.</p>';
+  state.wrong.forEach(w => {
+    const f = document.createElement('figure'), im = document.createElement('img');
+    im.src = w.s.url; im.alt = w.s.name; f.appendChild(im);
+    const c = document.createElement('figcaption'); c.textContent = state.classes[w.s.cls] + ' \u2192 ' + state.classes[w.pred] + ' ' + (w.conf * 100).toFixed(0) + '%'; f.appendChild(c);
+    f.onclick = () => openInsp(w.s); g.appendChild(f);
+  });
+}
+
+// ---------- live inference ----------
+async function toggleLive() {
+  if (state.live) { state.live = false; $('btnLive').textContent = 'Start live'; return; }
+  const eng = $('myEngine').value;
+  if (!myHasEngine(eng)) { log('Live: the ' + eng + ' model is not in memory. Train and convert, or load an SD card that holds it.'); $('liveBanner').textContent = 'No ' + eng + ' model yet'; return; }
+  await startCam(); if (!state.stream) return;
+  state.live = true; $('btnLive').textContent = 'Stop live'; liveLoop();
+}
+// Runs one model on one frame. Returns the probabilities, the conv2 map for the heatmap and the milliseconds taken.
+function myRunEngine(eng, xb) {
+  const t0 = performance.now();
+  let p, c2;
+  if (eng === 'int8') { const r = myForwardInt8(state.q, xb); p = r.probs; c2 = r.c2; }
+  else { forward(state.net, bytesToFloat(xb)); p = state.net.a.probs; c2 = state.net.a.c2o; }
+  const ms = performance.now() - t0;
+  state.myMs[eng] = state.myMs[eng] ? state.myMs[eng] * 0.8 + ms * 0.2 : ms;
+  return { p, c2, ms };
+}
+async function liveLoop() {
+  const hv = $('liveHeat').getContext('2d');
+  while (state.live) {
+    try {
+      const eng = $('myEngine').value, other = eng === 'int8' ? 'float' : 'int8';
+      if (!myHasEngine(eng)) { $('liveBanner').textContent = 'No ' + eng + ' model'; await sleep(300); continue; }
+      if (grabFrame()) {
+        const xb = rgbaToBytes(await decodeBlob(await frameBlob()));
+        const r = myRunEngine(eng, xb), p = r.p, top = argmax(p);
+        $('liveBanner').textContent = (eng === 'int8' ? 'INT8: ' : 'Float: ') + state.classes[top] + '  ' + (p[top] * 100).toFixed(0) + '%';
+        $('liveBars').innerHTML = barsHtml(p);
+        hv.imageSmoothingEnabled = false; hv.drawImage(capCanvas, 0, 0, 288, 288);
+        if (heat.overlay) drawHeatOn(hv, 288, { a: { c2o: r.c2 } }, heat.agg);
+        let info = (eng === 'int8' ? 'INT8' : 'Float') + ' network ' + state.myMs[eng].toFixed(1) + ' ms per frame in this page.';
+        if ($('myBoth').checked && myHasEngine(other)) {
+          const o = myRunEngine(other, xb), ot = argmax(o.p);
+          info += ' ' + (other === 'int8' ? 'INT8' : 'Float') + ' ' + state.myMs[other].toFixed(1) + ' ms says ' + esc(state.classes[ot]) + ' ' + (o.p[ot] * 100).toFixed(0) + '% (' + (ot === top ? 'same answer' : 'different answer') + ').';
+        }
+        $('myLiveInfo').innerHTML = info;
+      }
+    } catch (e) { log('Live error: ' + e.message); state.live = false; $('btnLive').textContent = 'Start live'; break; }
+    await sleep(60);
+  }
+}
+
+// ---------- save ----------
+const configJson = () => JSON.stringify({ page: 'vision-cnn-int8-sd-trainer ' + VERSION, firmware: 'vision firmware-v009 (train, convert, infer)', input_size: IN, input_channels: CH, grayscale: CH === 1, conv1_filters: C1F, conv2_filters: C2F, kernel_size: 3, classes: state.classes, weights_file: 'header/myWeights.bin', weights_floats: totalFloats(state.classes.length), int8_file: 'header/myWeightsInt8.bin', note: 'Class names and grayscale are read by this page and by the firmware at boot. NUM_CLASSES, INPUT_SIZE and filter counts are compile-time in the sketch.' }, null, 2);
+
+async function saveWeights() {
+  const st = $('saveStatus');
+  if (!hasModel()) { st.textContent = 'No model to save. Train or load weights first.'; return; }
+  if (!weightsFinite(state.net)) { st.textContent = 'Refused: the model contains NaN or Infinity. Nothing was written.'; log(st.textContent); return; }
+  const bytes = serializeWeights(state.net);
+  if (bytes.byteLength !== totalFloats(state.classes.length) * 4) { st.textContent = 'Refused: weight size does not match the class count.'; return; }
+  if (state.mode === 'dir') {
+    try {
+      const hd = await state.root.getDirectoryHandle('header', { create: true });
+      let old = null; try { old = await (await hd.getFileHandle('myWeights.bin')).getFile(); } catch (e) { /* no existing file */ }
+      if (old) { await writeFile(hd, 'myWeights.bin.bak', old); log('Existing myWeights.bin copied to header/myWeights.bin.bak.'); }
+      await writeFile(hd, 'myWeights.bin', new Blob([bytes]));
+      await writeFile(hd, 'config.json', new Blob([configJson()]));
+      state.dirty = false; state.wStatus = 'loaded'; state.wNote = 'Saved header/myWeights.bin (' + bytes.byteLength + ' bytes).';
+      st.textContent = 'Saved header/myWeights.bin (' + bytes.byteLength + ' bytes) and header/config.json' + (old ? ', previous file kept as myWeights.bin.bak.' : '.');
+    } catch (e) { st.textContent = 'Save failed: ' + e.message; }
+  } else {
+    state.dirty = false; st.textContent = 'Model kept for the zip. Press Save .zip to download it in the SD card layout.';
+  }
+  log(st.textContent); renderSource(); renderModelInfo();
+}
+
+async function buildZip() {
+  const files = [], enc = new TextEncoder();
+  state.classes.forEach(k => files.push({ name: 'images/' + k + '/', data: new Uint8Array(0) }));
+  if ($('zipImgs').checked) for (const s of state.samples) files.push({ name: 'images/' + state.classes[s.cls] + '/' + s.name, data: new Uint8Array(await s.blob.arrayBuffer()) });
+  if (hasModel() && weightsFinite(state.net)) files.push({ name: 'header/myWeights.bin', data: new Uint8Array(serializeWeights(state.net)) });
+  else log('No model in memory, so the zip has no myWeights.bin.');
+  if (state.q && state.q.key === layoutKey()) { const ib = myInt8Blob(state.q); files.push({ name: 'header/myWeightsInt8.bin', data: new Uint8Array(ib) }, { name: 'header/myWeightsInt8.h', data: enc.encode(myInt8Header(ib)) }); }
+  files.push({ name: 'header/config.json', data: enc.encode(configJson()) });
+  return makeZip(files);
+}
+async function saveZip() {
+  if (!state.mode) { $('saveStatus').textContent = 'Load a data source first.'; return; }
+  $('saveStatus').textContent = 'Building zip ...';
+  const blob = await buildZip(), name = 'sd-card-' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-') + '.zip';
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  if (state.mode === 'zip' && hasModel()) state.dirty = false;
+  $('saveStatus').textContent = 'Downloaded ' + name + ' (' + (blob.size / 1e6).toFixed(2) + ' MB).'; log($('saveStatus').textContent); renderModelInfo();
+}
+
+// ---------- model layout ----------
+// The preset list and the number box both show the current size. A size that is not in the list shows as "Custom".
+function syncLayoutControls() {
+  const sel = $('inSize');
+  sel.value = [...sel.options].some(o => o.value === String(IN)) ? String(IN) : 'custom';
+  $('inSizeNum').value = IN; $('c1f').value = C1F; $('c2f').value = C2F; $('gray').checked = CH === 1;
+}
+function onLayoutChange() {
+  if (state.training) { syncLayoutControls(); return; }
+  const i = parseInt($('inSizeNum').value), a = parseInt($('c1f').value), b = parseInt($('c2f').value);
+  if (!layoutValid(i, a, b)) {
+    let msg = 'Input size must be even, ' + MIN_IN + ' to ' + MAX_IN + '. Conv1 filters 1 to 16. Conv2 filters 1 to 32.';
+    if (Number.isInteger(i) && i >= MIN_IN && i <= MAX_IN && i % 2 === 1) msg = i + ' is odd, and the 2x2 max pool needs an even size. Try ' + (i - 1) + ' or ' + (i + 1) + '.\n\n' + msg;
+    alert(msg); syncLayoutControls(); return;
+  }
+  if (i === IN && a === C1F && b === C2F) { syncLayoutControls(); return; }
+  if (state.net && state.dirty && !confirm('Changing the layout discards the unsaved model in memory. Continue?')) { syncLayoutControls(); return; }
+  setLayout(i, a, b); state.samples.forEach(s => s.px = null); resetModel(); state.hist = { loss: [], tacc: [], vacc: [] };
+  syncLayoutControls();
+  log('Layout set to input ' + IN + ', conv1 ' + C1F + ', conv2 ' + C2F + ' (' + FLAT + ' flattened, ' + (totalFloats(Math.max(1, state.classes.length)) * 4) + ' bytes of weights for ' + Math.max(1, state.classes.length) + ' classes). Model in memory discarded. Update INPUT_SIZE, CONV1_FILTERS, CONV2_FILTERS in the sketch.');
+  renderAll();
+}
+
+// ---------- burst capture ----------
+let bursting = false; const BURST_N = 10;
+const nextVideoFrame = () => new Promise(r => { const v = $('capVideo'), t = setTimeout(r, 250); if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(() => { clearTimeout(t); r(); }); else { clearTimeout(t); setTimeout(r, 34); } });
+async function burst() {
+  if (bursting) return;
+  if (!state.mode) { log('Load a data source first (section 1).'); return; }
+  const ci = parseInt($('capClass').value);
+  if (!state.classes[ci]) { log('Add or pick a class first.'); return; }
+  if (!state.stream) { log('Start the camera first.'); return; }
+  let dir = null;
+  if (state.mode === 'dir') { try { dir = await classDir(ci, true); } catch (e) { log('Cannot open the class folder: ' + e.message); return; } }
+  bursting = true;
+  const btn = $('btnBurst'), rec = $('rec'), wrap = $('capWrap'), got = []; let last = '';
+  const gap = Math.max(0, parseInt($('burstMs').value) || 0);
+  btn.classList.add('recording'); rec.classList.add('on');
+  try {
+    for (let i = 0; i < BURST_N; i++) {
+      btn.textContent = '\u25CF ' + (i + 1) + '/' + BURST_N;
+      await nextVideoFrame();
+      if (!grabFrame()) break;
+      wrap.classList.add('flash'); setTimeout(() => wrap.classList.remove('flash'), 60);
+      let name = 'img_' + Date.now() + '.jpg'; if (name === last) name = 'img_' + (Date.now() + 1) + '.jpg'; last = name;
+      got.push({ name, blob: await frameBlob() });
+      if (gap > 0) await sleep(gap);
+    }
+  } finally { rec.classList.remove('on'); btn.classList.remove('recording'); btn.textContent = 'Saving ...'; }
+  let saved = 0;
+  for (const g of got) {
+    if (dir) { try { await writeFile(dir, g.name, g.blob); } catch (e) { log('Write failed: ' + e.message); break; } }
+    addSample(ci, g.name, g.blob); saved++;
+  }
+  state.evalStale = true; btn.textContent = 'Burst 10 (B)'; bursting = false;
+  log('Burst: saved ' + saved + ' of ' + BURST_N + ' images into ' + state.classes[ci] + ' (' + counts()[ci] + ' images).');
+  renderSource(); renderClasses(); renderBrowser(); renderLayoutInfo(); updateSplitInfo();
+}
+
+// ---------- review mode ----------
+const rev = { list: [], i: 0, ci: 0, tok: 0 };
+function pruneMarks() { for (const s of [...state.marks]) if (!state.samples.includes(s)) state.marks.delete(s); }
+function revClassOptions() {
+  const c = counts(); $('revClass').innerHTML = state.classes.map((k, i) => '<option value="' + i + '">' + esc(k) + ' (' + c[i] + ')</option>').join('');
+  $('revClass').value = rev.ci;
+}
+function openReview() {
+  if (!state.samples.length) { log('Nothing to review: no images loaded.'); return; }
+  const c = counts(); if (!state.classes[rev.ci] || !c[rev.ci]) rev.ci = Math.max(0, c.findIndex(v => v > 0));
+  revClassOptions(); $('rev').showModal(); buildRev(0);
+}
+async function buildRev(start) {
+  const tok = ++rev.tok; rev.ci = parseInt($('revClass').value);
+  let list = state.samples.filter(s => s.cls === rev.ci).sort((a, b) => a.name < b.name ? -1 : 1);
+  if ($('revSusp').checked && hasModel()) {
+    for (const s of list) { forward(state.net, await getInput(s)); s._pt = state.net.a.probs[s.cls]; if (tok !== rev.tok) return; }
+    list = list.slice().sort((a, b) => a._pt - b._pt);
+  }
+  rev.list = list; rev.i = Math.min(start, Math.max(0, list.length - 1)); await showRev();
+}
+async function showRev() {
+  const tok = ++rev.tok, s = rev.list[rev.i]; pruneMarks();
+  $('revDelete').textContent = 'Delete marked (' + state.marks.size + ')'; $('revDelete').disabled = !state.marks.size;
+  if (!s) { $('revImg').removeAttribute('src'); $('revFrame').classList.remove('marked'); $('revCount').textContent = 'This class has no images.'; $('revPred').textContent = '-'; return; }
+  $('revImg').src = s.url; $('revFrame').classList.toggle('marked', state.marks.has(s));
+  $('revCount').textContent = state.classes[s.cls] + '  ' + (rev.i + 1) + ' / ' + rev.list.length + '  ' + s.name;
+  if (hasModel()) {
+    const x = await getInput(s); if (tok !== rev.tok) return;
+    forward(state.net, x); const p = state.net.a.probs, top = argmax(p), agree = top === s.cls;
+    $('revPred').innerHTML = 'Model says <b class="' + (agree ? 'ok' : 'bad') + '">' + esc(state.classes[top]) + ' ' + (p[top] * 100).toFixed(0) + '%</b>' + (agree ? '' : '<br>Labelled ' + esc(state.classes[s.cls]) + ' (' + (p[s.cls] * 100).toFixed(0) + '%). Look closely.');
+  } else $('revPred').textContent = 'No model in memory, so no prediction is shown.';
+}
+function revMove(d) {
+  if (!rev.list.length) return;
+  const n = rev.i + d;
+  if (n >= rev.list.length) { revNextClass(); return; }
+  rev.i = Math.max(0, n); showRev();
+}
+function revNextClass() {
+  const c = counts(), n = state.classes.length;
+  for (let k = 1; k <= n; k++) { const j = (rev.ci + k) % n; if (c[j] > 0) { $('revClass').value = j; buildRev(0); return; } }
+}
+function revToggle() {
+  const s = rev.list[rev.i]; if (!s) return;
+  if (state.marks.has(s)) state.marks.delete(s); else { state.marks.add(s); if (rev.i < rev.list.length - 1) rev.i++; }
+  showRev();
+}
+async function deleteMarked() {
+  pruneMarks(); const list = [...state.marks]; if (!list.length) return;
+  const per = {}; list.forEach(s => per[state.classes[s.cls]] = (per[state.classes[s.cls]] || 0) + 1);
+  if (!confirm('Delete ' + list.length + ' marked images (' + Object.entries(per).map(([k, v]) => k + ' ' + v).join(', ') + ') from the ' + (state.mode === 'dir' ? 'SD card folder' : 'zip data') + '? This cannot be undone.')) return;
+  let del = 0;
+  for (const s of list) {
+    if (state.mode === 'dir') { try { await (await classDir(s.cls, false)).removeEntry(s.name); } catch (e) { log('Delete failed for ' + s.name + ': ' + e.message); continue; } }
+    URL.revokeObjectURL(s.url); state.samples = state.samples.filter(x => x !== s); state.wrong = state.wrong.filter(w => w.s !== s); state.marks.delete(s); del++;
+  }
+  state.evalStale = true; log('Review: deleted ' + del + ' of ' + list.length + ' marked images.');
+  renderSource(); renderClasses(); renderBrowser(); renderLayoutInfo(); updateSplitInfo(); renderEval(); revClassOptions(); await buildRev(rev.i);
+}
+
+// ---------- config.json only ----------
+async function saveConfig() {
+  const st = $('saveStatus');
+  if (!state.classes.length) { st.textContent = 'No classes to write.'; return; }
+  if (state.mode !== 'dir') { st.textContent = 'Zip mode: config.json is included in Save .zip.'; return; }
+  try {
+    const hd = await state.root.getDirectoryHandle('header', { create: true });
+    await writeFile(hd, 'config.json', new Blob([configJson()]));
+    st.textContent = 'Wrote header/config.json with ' + state.classes.length + ' classes: ' + state.classes.join(', ') + '.';
+  } catch (e) { st.textContent = 'Write failed: ' + e.message; }
+  log(st.textContent);
+}
+
+// ---------- serial monitor (Web Serial) ----------
+const ser = { port: null, reader: null, writer: null, readDone: null, writeDone: null };
+function serAppend(t) {
+  const o = $('serOut'); o.value += t.replace(/\r/g, '');
+  if (o.value.length > 60000) o.value = o.value.slice(-40000);
+  o.scrollTop = o.scrollHeight;
+}
+function serUi(on) {
+  $('btnSerial').textContent = on ? 'Disconnect' : 'Connect';
+  $('serSend').disabled = !on; $('serIn').disabled = !on;
+  $('serStatus').textContent = on ? 'Connected at 115200 baud.' : 'Not connected.';
+}
+async function serDisconnect() {
+  const p = ser.port; if (!p) return; ser.port = null;
+  clearInterval(serBeat); serBeat = null; serPend = '';
+  try { await ser.writer.write('d'); } catch (e) { /* port already gone */ }
+  try { await ser.reader.cancel(); } catch (e) { /* already closed */ }
+  try { await ser.writer.close(); } catch (e) { /* already closed */ }
+  try { await ser.readDone; await ser.writeDone; } catch (e) { /* ignore */ }
+  try { await p.close(); } catch (e) { /* ignore */ }
+  ser.reader = ser.writer = null; serUi(false); log('Serial disconnected.');
+}
+async function serConnect() {
+  if (ser.port) { await serDisconnect(); return; }
+  let port;
+  try { port = await navigator.serial.requestPort(); await port.open({ baudRate: 115200 }); }
+  catch (e) { if (e.name !== 'NotFoundError') log('Serial: ' + e.message); return; }
+  ser.port = port;
+  const dec = new TextDecoderStream(); ser.readDone = port.readable.pipeTo(dec.writable).catch(() => {}); ser.reader = dec.readable.getReader();
+  const enc = new TextEncoderStream(); ser.writeDone = enc.readable.pipeTo(port.writable).catch(() => {}); ser.writer = enc.writable.getWriter();
+  serUi(true); log('Serial connected.');
+  serDebugSync(); serBeat = setInterval(serDebugSync, 5000);
+  const rd = ser.reader;
+  (async () => { try { for (;;) { const { value, done } = await rd.read(); if (done) break; if (value) serFeed(value); } } catch (e) { /* closed */ } if (ser.port === port) serDisconnect(); })();
+}
+async function serSend() {
+  if (!ser.writer) return;
+  const t = $('serIn').value;
+  try { await ser.writer.write(t + '\n'); serAppend('> ' + t + '\n'); } catch (e) { log('Serial send failed: ' + e.message); }
+  $('serIn').value = ''; $('serIn').focus();
+}
+
+// ---------- device debug frames (firmware-v009 or later) ----------
+let serPend = '', serBeat = null;
+const dev = { f: null, tok: 0 };
+function serDebugSync() { if (ser.writer) ser.writer.write($('serDebug').checked ? 'D' : 'd').catch(() => {}); }
+const b64ToBytes = s => { const b = atob(s), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; };
+// Text goes to the monitor; complete lines that start with '@' are debug frames.
+function serFeed(chunk) {
+  serPend += chunk;
+  let i;
+  while ((i = serPend.indexOf('\n')) >= 0) {
+    const line = serPend.slice(0, i); serPend = serPend.slice(i + 1);
+    if (line.charCodeAt(0) === 64) serFrame(line.trim()); else serAppend(line.replace(/\r$/, '') + '\n');
+  }
+  if (serPend && serPend.charCodeAt(0) !== 64) { serAppend(serPend); serPend = ''; }
+}
+function serFrame(line) {
+  const f = line.split(' ');
+  if (f[0] !== '@F' || f.length < 11) { serAppend('[incomplete debug frame ignored]\n'); return; }
+  try {
+    const nums = s => s === '-' ? null : s.split(',').map(Number);
+    const fr = { kind: f[1], n: f[2], pred: parseInt(f[3]), probs: nums(f[4]), logits: nums(f[5]), layout: f[6], ctr: nums(f[7]), side: parseInt(f[8]), heat: f[9] === '-' ? null : b64ToBytes(f[9]), jpg: b64ToBytes(f[10]), eng: f[11] || '' };
+    fr.blob = new Blob([fr.jpg], { type: 'image/jpeg' });
+    if (dev.f) URL.revokeObjectURL(dev.f.url);
+    fr.url = URL.createObjectURL(fr.blob); dev.f = fr; renderDev();
+  } catch (e) { serAppend('[debug frame error: ' + e.message + ']\n'); }
+}
+async function renderDev() {
+  const fr = dev.f; if (!fr) return;
+  const tok = ++dev.tok, cv = $('devCanvas'), ctx = cv.getContext('2d');
+  const img = await loadImg(fr.url); if (tok !== dev.tok) return;
+  ctx.imageSmoothingEnabled = false; ctx.clearRect(0, 0, cv.width, cv.height); ctx.drawImage(img, 0, 0, cv.width, cv.height);
+  if (fr.heat && heat.overlay && fr.heat.length === fr.side * fr.side) paintHeat(ctx, cv.width, i => fr.heat[i] / 255, fr.side);
+  const label = { I: 'inference frame', C: 'image just saved', P: 'live preview while collecting' }[fr.kind] || fr.kind;
+  let h = '<div><b>Device ' + label + '</b> #' + esc(fr.n) + ', layout ' + esc(fr.layout) + ', JPEG ' + fr.jpg.length + ' bytes</div>', bars = '';
+  if (fr.probs) {
+    const top = argmax(fr.probs), name = i => state.classes[i] !== undefined && fr.probs.length === state.classes.length ? state.classes[i] : 'class ' + i;
+    h += '<div>Device says <b>' + esc(name(top)) + ' ' + (fr.probs[top] * 100).toFixed(1) + '%</b></div>';
+    if (fr.probs.length === state.classes.length) bars = barsHtml(fr.probs);
+    const useI8 = fr.eng ? fr.eng === 'I8' : !!state.q;
+    if (fr.eng) h += '<div>Device model: <b>' + (useI8 ? 'INT8' : 'float') + '</b></div>';
+    if (!myHasEngine(useI8 ? 'int8' : 'float')) h += '<div class="note">The page has no ' + (useI8 ? 'INT8' : 'float') + ' model in memory, so nothing to compare with.</div>';
+    else if (fr.layout !== layoutKey() || fr.probs.length !== state.classes.length) h += '<div class="warn">Device layout ' + esc(fr.layout) + ' with ' + fr.probs.length + ' classes differs from this page (' + esc(layoutKey()) + ', ' + state.classes.length + ' classes). No comparison.</div>';
+    else {
+      const xb = rgbaToBytes(await decodeBlob(fr.blob)); if (tok !== dev.tok) return;
+      const x = bytesToFloat(xb), p = useI8 ? myForwardInt8(state.q, xb).probs : (forward(state.net, x), state.net.a.probs), bt = argmax(p);
+      let md = 0; for (let i = 0; i < p.length; i++) md = Math.max(md, Math.abs(p[i] - fr.probs[i]) * 100);
+      h += '<div>Page ' + (useI8 ? 'INT8' : 'float') + ' model on the same JPEG says <b>' + esc(state.classes[bt]) + ' ' + (p[bt] * 100).toFixed(1) + '%</b>. Largest probability difference <b class="' + (md < 1 ? 'ok' : md < 5 ? 'warn' : 'bad') + '">' + md.toFixed(2) + ' points</b>.</div>';
+      const c0 = ((IN / 2) * IN + IN / 2) * CH;
+      if (fr.ctr) {
+        const dc = Math.max(...fr.ctr.map((v, k) => Math.abs(x[c0 + k] - v)));
+        h += '<div>Centre input pixel: device ' + fr.ctr.map(v => v.toFixed(3)).join(' ') + ', page ' + Array.from(x.slice(c0, c0 + CH)).map(v => v.toFixed(3)).join(' ') + '.</div>';
+        if (md >= 5) h += '<div class="' + (dc > 0.03 ? 'bad' : 'warn') + '">' + (dc > 0.03 ? 'The model inputs differ: check flip, resize or JPEG decode.' : 'Inputs match, so the weights on the device are probably not the ones in this page (old myWeights.bin, or a different class order).') + '</div>';
+      }
+    }
+  }
+  $('devInfo').innerHTML = h; $('devBars').innerHTML = bars;
+}
+
+// ---------- INT8 ----------
+function onGrayClick() {
+  const want = $('gray').checked ? 1 : 3;
+  if (state.training || want === CH) { syncLayoutControls(); return; }
+  if (state.net && state.dirty && !confirm('Changing the channels discards the unsaved model in memory. Continue?')) { syncLayoutControls(); return; }
+  setLayout(IN, C1F, C2F, want); state.samples.forEach(s => s.px = null); resetModel(); state.hist = { loss: [], tacc: [], vacc: [] };
+  log('Input set to ' + (want === 1 ? 'grayscale (1 channel)' : 'RGB (3 channels)') + '. Model in memory discarded. Retrain. The device reads grayscale from config.json, so save again.');
+  renderAll();
+}
+function myRange(arr, c, k) { for (const v of arr) { if (v < c['lo' + k]) c['lo' + k] = v; if (v > c['hi' + k]) c['hi' + k] = v; } }
+async function myConvert() {
+  if (!hasModel()) { log('Convert: no model in memory. Train or load weights first.'); return; }
+  const net = state.net, sp = currentSplit(), pool = sp.train.length ? sp.train : state.samples;
+  const want = Math.max(1, parseInt($('myCalibN').value) || 200), gap = Math.max(1, Math.floor(pool.length / want));
+  const c = { lo1: 0, hi1: 0, lo2: 0, hi2: 0, lo3: 0, hi3: 0 }, buf = new Float32Array(IN * IN * CH); let n = 0;
+  for (let i = 0; i < pool.length && n < want; i += gap, n++) {
+    forward(net, bytesToFloat(await getBytes(pool[i]), buf));
+    myRange(net.a.c1o, c, 1); myRange(net.a.c2o, c, 2); myRange(net.a.logits, c, 3);
+    if (IN >= 128 || n % 10 === 9) await tick();
+  }
+  const q = myQuantize(net, c), ts = sp.val[0] || state.samples[0];
+  q.calib = n; q.testBytes = Uint8Array.from(await getBytes(ts)); q.testName = pathOf(ts);
+  state.q = q; state.i8 = null;
+  log('Converted to INT8 using ' + n + ' calibration images.');
+  myRenderInt8(); await myEvalInt8();
+}
+async function myEvalInt8() {
+  if (!hasModel() || !state.q) { log('INT8 evaluation: convert a model first.'); return; }
+  const sp = currentSplit(); let which = $('evalSet').value, set = which === 'val' ? sp.val : state.samples;
+  if (!set.length) { set = state.samples; which = 'all'; }
+  const buf = new Float32Array(IN * IN * CH); let fOk = 0, qOk = 0, same = 0, md = 0;
+  for (let i = 0; i < set.length; i++) {
+    const s = set[i], xb = await getBytes(s);
+    forward(state.net, bytesToFloat(xb, buf)); const pf = Float32Array.from(state.net.a.probs), a = argmax(pf);
+    const r = myForwardInt8(state.q, xb), b = argmax(r.probs);
+    if (a === s.cls) fOk++; if (b === s.cls) qOk++; if (a === b) same++;
+    for (let k = 0; k < pf.length; k++) md = Math.max(md, Math.abs(pf[k] - r.probs[k]) * 100);
+    if (IN >= 128 || i % 10 === 9) await tick();
+  }
+  state.i8 = { n: set.length, which, fOk, qOk, same, md };
+  log('Float ' + (100 * fOk / set.length).toFixed(1) + '% vs INT8 ' + (100 * qOk / set.length).toFixed(1) + '% on ' + set.length + ' ' + (which === 'val' ? 'validation' : 'all') + ' images, same answer on ' + (100 * same / set.length).toFixed(1) + '%.');
+  myRenderInt8();
+}
+function myRenderInt8() {
+  const q = state.q, e = state.i8;
+  if (!q) { $('myInfo').innerHTML = (state.myInt8Note ? '<div class="bad">' + esc(state.myInt8Note) + '</div>' : '') + 'No INT8 model yet. Train or load a float model, then press Convert to INT8.'; myRenderEngine(); return; }
+  const lb = L => L.w.length + L.bias.length * 20 + 4, i8 = 32 + lb(q.c1) + lb(q.c2) + lb(q.d), f32 = totalFloats(q.N) * 4;
+  let h = '';
+  if (q.fromFile) h += '<div>INT8 model loaded from the SD card, layout ' + q.key + '. Convert again to rebuild it from the float model.</div>';
+  else {
+    const r = q.rng; h += '<div>Calibration: ' + q.calib + ' images. Float ranges: conv1 ' + r.lo1.toFixed(2) + ' to ' + r.hi1.toFixed(2) + ', conv2 ' + r.lo2.toFixed(2) + ' to ' + r.hi2.toFixed(2) + ', logits ' + r.lo3.toFixed(2) + ' to ' + r.hi3.toFixed(2) + '.</div>';
+    const worst = Math.max(q.c1.worst, q.c2.worst, q.d.worst);
+    h += '<div>Largest possible int32 sum: <b class="' + (worst > 2147483647 ? 'bad' : 'ok') + '">' + Math.round(worst).toLocaleString() + '</b> of 2,147,483,647' + (worst > 2147483647 ? '. Overflow possible: use a smaller layout.' : '.') + '</div>';
+  }
+  h += '<div>Model size: float <b>' + f32.toLocaleString() + '</b> bytes, INT8 <b>' + i8.toLocaleString() + '</b> bytes (' + (f32 / i8).toFixed(1) + 'x smaller, without the test image).</div>';
+  if (e) h += '<div>On ' + e.n + ' ' + (e.which === 'val' ? 'validation' : 'all') + ' images: float <b>' + (100 * e.fOk / e.n).toFixed(1) + '%</b>, INT8 <b>' + (100 * e.qOk / e.n).toFixed(1) + '%</b>, same answer <b>' + (100 * e.same / e.n).toFixed(1) + '%</b>, largest probability difference <b>' + e.md.toFixed(2) + '</b> points.</div>';
+  $('myInfo').innerHTML = h; myRenderEngine();
+}
+function myInt8Header(buf) {
+  const u = new Uint8Array(buf);
+  let t = '#ifndef MY_WEIGHTS_INT8_H\n#define MY_WEIGHTS_INT8_H\n// INPUT_SIZE ' + IN + ', CONV1_FILTERS ' + C1F + ', CONV2_FILTERS ' + C2F + ', NUM_CLASSES ' + state.classes.length + ', channels ' + CH + '\n// Classes: ' + state.classes.join(', ') + '\nconst unsigned char myInt8Blob[] = {\n';
+  for (let i = 0; i < u.length; i += 24) t += Array.from(u.subarray(i, i + 24)).join(',') + (i + 24 < u.length ? ',\n' : '\n');
+  return t + '};\n#endif\n';
+}
+async function mySaveInt8() {
+  const st = $('mySaveStatus'), q = state.q;
+  if (!q || q.key !== layoutKey()) { st.textContent = 'Convert to INT8 first.'; return; }
+  const buf = myInt8Blob(q);
+  if (state.mode === 'dir') {
+    try {
+      const hd = await state.root.getDirectoryHandle('header', { create: true });
+      await writeFile(hd, 'myWeightsInt8.bin', new Blob([buf]));
+      await writeFile(hd, 'myWeightsInt8.h', new Blob([myInt8Header(buf)]));
+      await writeFile(hd, 'config.json', new Blob([configJson()]));
+      st.textContent = 'Saved header/myWeightsInt8.bin (' + buf.byteLength + ' bytes), header/myWeightsInt8.h and header/config.json (grayscale ' + (CH === 1) + ').';
+    } catch (e) { st.textContent = 'Save failed: ' + e.message; }
+  } else st.textContent = 'Zip mode: the INT8 files are included in Save .zip.';
+  log(st.textContent);
+}
+
+async function mySaveBoth() {
+  const st = $('mySaveStatus');
+  if (!hasModel()) { st.textContent = 'No float model to save. Train or load weights first.'; return; }
+  if (!state.q || state.q.key !== layoutKey()) { st.textContent = 'Convert to INT8 first, then save both.'; return; }
+  if (state.mode !== 'dir') { st.textContent = 'Zip mode: Save .zip in section 6 already holds both models.'; return; }
+  await saveWeights();
+  await mySaveInt8();
+  st.textContent = 'Saved both: header/myWeights.bin (float) and header/myWeightsInt8.bin (INT8), with config.json.';
+  log(st.textContent);
+}
+
+// ---------- model switch (live inference) ----------
+function myRenderEngine() {
+  const sel = $('myEngine'); if (!sel) return;
+  const f = myHasEngine('float'), i = myHasEngine('int8');
+  sel.options[0].textContent = 'Model: Float' + (f ? '' : ' (none)');
+  sel.options[1].textContent = 'Model: INT8' + (i ? '' : ' (none)');
+  if (!myHasEngine(sel.value) && (f || i)) sel.value = f ? 'float' : 'int8';
+}
+function myEngineChange() {
+  state.myMs = { float: 0, int8: 0 };
+  if (!myHasEngine($('myEngine').value)) $('myLiveInfo').textContent = 'That model is not in memory. Train and convert, or load an SD card that holds it.';
+}
+
+// ======================================================================
+//  PATHWAY 3: MobileNet transfer learning. Browser only. The backbone is frozen, only the small head is trained.
+//  Pipeline: 240x240 JPEG -> 224x224 canvas resize -> RGB -> (pixel / 127.5) - 1 inside the MobileNet library -> embedding -> head.
+// ======================================================================
+const MY_TFJS_URL = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js';
+const MY_MOBILENET_URL = 'https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.1/dist/mobilenet.min.js';
+const MY_MN_PARAMS = { 'v1-0.25': 0.47, 'v1-0.50': 1.3, 'v1-0.75': 2.6, 'v1-1.00': 4.2, 'v2-0.50': 1.95, 'v2-0.75': 2.6, 'v2-1.00': 3.5 };
+const myMn = { bb: null, key: '', headKey: '', dim: 0, feats: new Map(), head: null, classes: [], extractMs: 0, extractN: 0, trainMs: 0 };
+const myMnCanvas = document.createElement('canvas'); myMnCanvas.width = myMnCanvas.height = 224;
+const myMnCtx = myMnCanvas.getContext('2d', { willReadFrequently: true });
+const myMnSay = myText => { $('myMnInfo').innerHTML = myText; };
+
+function myLoadScript(myUrl) {
+  return new Promise((myOk, myFail) => {
+    const myTag = document.createElement('script'); myTag.src = myUrl; myTag.onload = myOk;
+    myTag.onerror = () => myFail(new Error('could not load ' + myUrl)); document.head.appendChild(myTag);
+  });
+}
+async function myMnLoad() {
+  const myKey = $('myMnModel').value, myParts = myKey.split('-');
+  try {
+    myMnSay('Loading TensorFlow.js and MobileNet (internet needed the first time)...');
+    if (!window.tf) await myLoadScript(MY_TFJS_URL);
+    if (!window.mobilenet) await myLoadScript(MY_MOBILENET_URL);
+    await tf.ready();
+    if (myMn.bb && myMn.bb.model && myMn.bb.model.dispose) myMn.bb.model.dispose();
+    myMn.bb = await mobilenet.load({ version: Number(myParts[0].substring(1)), alpha: Number(myParts[1]) });
+    if (myMn.key !== myKey) { myMn.feats = new Map(); myMn.extractMs = 0; myMn.extractN = 0; }
+    myMn.key = myKey;
+    const myTest = myMn.bb.infer(myMnCanvas, true); myMn.dim = myTest.shape[1]; myTest.dispose();
+    myMnSay('<span class="ok">MobileNet ' + esc(myKey) + ' loaded.</span> Embedding size ' + myMn.dim + '. Backbone frozen. Next: 2 Extract features, then 3 Train head.');
+    log('MobileNet ' + myKey + ' loaded, embedding size ' + myMn.dim + '.');
+  } catch (myProblem) { myMnSay('<span class="bad">Could not load MobileNet: ' + esc(myProblem.message) + '. Check the internet connection.</span>'); }
+}
+async function myMnFeatures(myList) {
+  const myNeed = myList.filter(s => !myMn.feats.has(s)), myT0 = performance.now();
+  for (let i = 0; i < myNeed.length; i++) {
+    await decodeBlob(myNeed[i].blob);
+    myMnCtx.drawImage(scratch, 0, 0, 224, 224);
+    const myTensor = myMn.bb.infer(myMnCanvas, true);
+    myMn.feats.set(myNeed[i], await myTensor.data()); myTensor.dispose();
+    if (i % 5 === 4) { myMnSay('Extracting features: ' + (i + 1) + ' of ' + myNeed.length); await tick(); }
+  }
+  myMn.extractMs += performance.now() - myT0; myMn.extractN += myNeed.length;
+}
+async function myMnExtract() {
+  if (!myMn.bb) { myMnSay('Press Load MobileNet first.'); return; }
+  if (!state.samples.length) { myMnSay('No images loaded. Load an SD card folder or zip first.'); return; }
+  await myMnFeatures(state.samples);
+  myMnSay('<span class="ok">Features cached for ' + myMn.feats.size + ' images</span> (' + (myMn.extractN ? (myMn.extractMs / myMn.extractN).toFixed(1) : '0') + ' ms per image in this browser).');
+}
+// ---------- Inspect backbone: lists every layer and weight so the exact architecture is known ----------
+function myMnPick(myConfig) {
+  const myKeys = ['filters', 'kernelSize', 'strides', 'padding', 'activation', 'units', 'depthMultiplier', 'maxValue', 'epsilon', 'useBias'], myOut = {};
+  myKeys.forEach(k => { if (myConfig[k] !== undefined) myOut[k] = myConfig[k]; });
+  return myOut;
+}
+function myMnInspect() {
+  if (!myMn.bb || !myMn.bb.model) { myMnSay('Press Load MobileNet first.'); return; }
+  const myModel = myMn.bb.model, myLines = [], myShape = t => '[' + t.shape.join(',') + ']';
+  let myParams = 0;
+  const myTensorLine = (myName, t) => {
+    let myRange = '';
+    if (t.dtype === 'float32') { const m = tf.tidy(() => [t.min().dataSync()[0], t.max().dataSync()[0]]); myRange = ' min ' + m[0].toFixed(4) + ' max ' + m[1].toFixed(4); }
+    myParams += t.size; myLines.push('W ' + myName + ' ' + myShape(t) + ' ' + t.dtype + myRange);
+  };
+  myLines.push('MobileNet ' + myMn.key + ' | class ' + myModel.constructor.name + ' | tfjs ' + tf.version.tfjs + ' | embedding size ' + myMn.dim);
+  try {
+    if (myModel.layers) {
+      myModel.layers.forEach((L, i) => {
+        myLines.push('L' + i + ' ' + L.name + ' ' + L.getClassName() + ' out ' + JSON.stringify(L.outputShape) + ' ' + JSON.stringify(myMnPick(L.getConfig())));
+        L.getWeights().forEach((t, j) => myTensorLine('   ' + L.name + '/' + j, t));
+      });
+    } else {
+      if (myModel.inputs) myLines.push('Inputs: ' + JSON.stringify(myModel.inputs.map(x => ({ name: x.name, shape: x.shape, dtype: x.dtype }))));
+      if (myModel.outputs) myLines.push('Outputs: ' + JSON.stringify(myModel.outputs.map(x => ({ name: x.name, shape: x.shape, dtype: x.dtype }))));
+      const myWeights = myModel.weights || {};
+      Object.keys(myWeights).forEach(myName => myWeights[myName].forEach(t => myTensorLine(myName, t)));
+      const myGraph = myModel.executor && myModel.executor.graph, myNodes = myGraph && myGraph.nodes;
+      if (myNodes) {
+        Object.keys(myNodes).forEach(myName => {
+          const n = myNodes[myName], myAttrs = Object.keys(n.attrParams || {}).map(k => { const v = JSON.stringify(n.attrParams[k].value); return k + '=' + (v === undefined ? '-' : v.substring(0, 60)); }).join(' ');
+          myLines.push('N ' + n.name + ' ' + n.op + ' in(' + (n.inputNames || []).join(',') + ') ' + myAttrs);
+        });
+      } else myLines.push('Graph nodes not found. Executor keys: ' + Object.keys(myModel.executor || {}).join(','));
+    }
+  } catch (myProblem) { myLines.push('Inspect error: ' + myProblem.message); }
+  myLines.push('Total weight values: ' + myParams);
+  $('myMnDump').value = myLines.join('\n');
+  myMnSay('Backbone report ready (' + myLines.length + ' lines, ' + myParams + ' weight values). Press Save report, or copy the text box, and send it to Claude.');
+}
+function myMnDumpSave() {
+  const myUrl = URL.createObjectURL(new Blob([$('myMnDump').value], { type: 'text/plain' })), myLink = document.createElement('a');
+  myLink.href = myUrl; myLink.download = 'myMobilenetInspect.txt'; myLink.click(); setTimeout(() => URL.revokeObjectURL(myUrl), 1000);
+}
+
+function myMnBuildHead(myHidden, myN, myDim) {
+  const myModel = tf.sequential();
+  if (myHidden > 0) {
+    myModel.add(tf.layers.dense({ units: myHidden, activation: 'relu', inputShape: [myDim] }));
+    myModel.add(tf.layers.dropout({ rate: 0.2 }));
+    myModel.add(tf.layers.dense({ units: myN, activation: 'softmax' }));
+  } else myModel.add(tf.layers.dense({ units: myN, activation: 'softmax', inputShape: [myDim] }));
+  return myModel;
+}
+function myMnPredict(myFeatList) {
+  return tf.tidy(() => Array.from(myMn.head.predict(tf.tensor2d(myFeatList)).argMax(-1).dataSync()));
+}
+async function myMnTrain() {
+  if (!myMn.bb) { myMnSay('Press Load MobileNet first.'); return; }
+  const myN = state.classes.length, sp = currentSplit();
+  if (myN < 2 || !sp.train.length) { myMnSay('Need at least 2 classes with images.'); return; }
+  await myMnFeatures(state.samples);
+  const myHidden = parseInt($('myMnHidden').value) || 0, myEpochs = parseInt($('myMnEpochs').value) || 40, myLr = parseFloat($('myMnLr').value) || 0.001;
+  if (myMn.head) myMn.head.dispose();
+  myMn.head = myMnBuildHead(myHidden, myN, myMn.dim);
+  myMn.head.compile({ optimizer: tf.train.adam(myLr), loss: 'categoricalCrossentropy', metrics: ['accuracy'] });
+  const myHasVal = sp.val.length > 0, myT0 = performance.now(), myMade = [];
+  try {
+    const myX = tf.tensor2d(sp.train.map(s => myMn.feats.get(s))), myY = tf.oneHot(tf.tensor1d(sp.train.map(s => s.cls), 'int32'), myN); myMade.push(myX, myY);
+    const myOptions = { epochs: myEpochs, batchSize: 16, shuffle: true, callbacks: { onEpochEnd: async (myEpoch, myLogs) => {
+      const myVal = myLogs.val_acc !== undefined ? myLogs.val_acc : myLogs.val_accuracy;
+      myMnSay('Training head: epoch ' + (myEpoch + 1) + ' of ' + myEpochs + ', loss ' + myLogs.loss.toFixed(3) + (myHasVal ? ', validation accuracy ' + (100 * myVal).toFixed(1) + '%' : ''));
+      await tf.nextFrame(); } } };
+    if (myHasVal) {
+      const myVX = tf.tensor2d(sp.val.map(s => myMn.feats.get(s))), myVY = tf.oneHot(tf.tensor1d(sp.val.map(s => s.cls), 'int32'), myN); myMade.push(myVX, myVY);
+      myOptions.validationData = [myVX, myVY];
+    }
+    await myMn.head.fit(myX, myY, myOptions);
+  } finally { myMade.forEach(t => t.dispose()); }
+  myMn.trainMs = performance.now() - myT0; myMn.headKey = myMn.key; myMn.classes = state.classes.slice();
+  let myOk = 0; const myUse = myHasVal ? sp.val : [];
+  if (myUse.length) { const myP = myMnPredict(myUse.map(s => myMn.feats.get(s))); myUse.forEach((s, i) => { if (myP[i] === s.cls) myOk++; }); }
+  myMnSay('<span class="ok">Head trained in ' + (myMn.trainMs / 1000).toFixed(1) + ' s.</span> Only the head was trained; MobileNet is frozen. ' +
+    (myUse.length ? 'Validation: ' + myOk + ' of ' + myUse.length + ' correct (' + (100 * myOk / myUse.length).toFixed(1) + '%). Run the Dataset doctor to check that validation is a fair test.' : 'There are no validation images, so no accuracy is reported.'));
+  log('MobileNet head trained: ' + (myUse.length ? myOk + '/' + myUse.length + ' validation correct' : 'no validation images') + '.');
+}
+async function myMnCompare() {
+  if (!myMn.head) { myMnSay('Train the head first (button 3).'); return; }
+  if (myMn.headKey !== myMn.key) { myMnSay('<span class="bad">The head was made for ' + esc(myMn.headKey) + ' but ' + esc(myMn.key) + ' is loaded. Load the matching MobileNet.</span>'); return; }
+  const sp = currentSplit(); let myUse = sp.val, myWhich = 'validation';
+  if (!myUse.length) { myUse = state.samples; myWhich = 'all images (no validation images, so optimistic)'; }
+  await myMnFeatures(myUse);
+  const myBytes = []; for (const s of myUse) myBytes.push(await getBytes(s));
+  const myCount = myPred => myUse.reduce((a, s, i) => a + (myPred[i] === s.cls ? 1 : 0), 0), myRows = [];
+  const myRow = (myName, myOk, myTime, mySize, myNote) => '<tr><td>' + myName + '</td><td>' + myOk + ' of ' + myUse.length + ' (' + (100 * myOk / myUse.length).toFixed(1) + '%)</td><td>' + myTime + '</td><td>' + mySize + '</td><td>' + myNote + '</td></tr>';
+  if (hasModel()) {
+    const myBuf = new Float32Array(IN * IN * CH), myP = [], myT0 = performance.now();
+    for (let i = 0; i < myUse.length; i++) { forward(state.net, bytesToFloat(myBytes[i], myBuf)); myP.push(argmax(state.net.a.probs)); }
+    myRows.push(myRow('1 Float CNN', myCount(myP), ((performance.now() - myT0) / myUse.length).toFixed(2) + ' ms (browser JS)', totalFloats(state.classes.length) * 4 + ' bytes', 'Training time is not recorded by this page. Runs on the ESP32.'));
+  }
+  if (myHasEngine('int8')) {
+    const myP = [], myT0 = performance.now();
+    for (let i = 0; i < myUse.length; i++) myP.push(argmax(myForwardInt8(state.q, myBytes[i]).probs));
+    myRows.push(myRow('2 INT8 CNN', myCount(myP), ((performance.now() - myT0) / myUse.length).toFixed(2) + ' ms (browser JS)', myInt8Blob(state.q).byteLength + ' bytes', 'Integer math in JavaScript. The ESP32 speed is different. Runs on the ESP32.'));
+  }
+  const myP = myMnPredict(myUse.map(s => myMn.feats.get(s))), myBackbone = Math.max(0, MY_MN_PARAMS[myMn.key] * 1e6 - myMn.dim * 1000 - 1000);
+  myRows.push(myRow('3 MobileNet head', myCount(myP), (myMn.extractN ? myMn.extractMs / myMn.extractN : 0).toFixed(1) + ' ms (backbone, browser)',
+    myMn.head.countParams() * 4 + ' bytes head + about ' + (myBackbone * 4 / 1048576).toFixed(1) + ' MB backbone float32 (estimate)',
+    'Features ' + (myMn.extractMs / 1000).toFixed(1) + ' s plus head ' + (myMn.trainMs / 1000).toFixed(1) + ' s measured. Not on the ESP32 yet.'));
+  $('myMnTable').innerHTML = '<table><thead><tr><th>Pathway</th><th>Correct on ' + myWhich + '</th><th>Time per image</th><th>Size</th><th>Notes</th></tr></thead><tbody>' + myRows.join('') + '</tbody></table>' +
+    '<p class="note">All rows use the same images and classes. Sizes marked estimate come from published parameter counts. The float and INT8 CNN use ' + IN + 'x' + IN + ' input, MobileNet uses 224x224, so the inputs are not identical. For the real ESP32 cost of MobileNet-sized layers use the firmware menu item Bench MobileNet.</p>';
+  myMnSay('Comparison done on ' + myUse.length + ' ' + esc(myWhich) + ' images.');
+}
+async function myMnDoctor() {
+  if (!myMn.bb) { myMnSay('Press Load MobileNet first.'); return; }
+  const myN = state.classes.length, myS = state.samples, myDim = myMn.dim;
+  if (myS.length < 4) { myMnSay('Need more images.'); return; }
+  await myMnFeatures(myS);
+  const myUnit = myS.map(s => { const f = myMn.feats.get(s); let n = 0; for (let k = 0; k < f.length; k++) n += f[k] * f[k]; n = Math.sqrt(n) || 1; return f.map(v => v / n); });
+  const myIndex = new Map(myS.map((s, i) => [s, i])), mySum = Array.from({ length: myN }, () => new Float32Array(myDim)), myCnt = new Array(myN).fill(0), myRes = [];
+  myS.forEach((s, i) => { for (let k = 0; k < myDim; k++) mySum[s.cls][k] += myUnit[i][k]; myCnt[s.cls]++; });
+  for (let i = 0; i < myS.length; i++) {
+    let myOwn = null, myBest = -2, myBestClass = -1;
+    for (let c = 0; c < myN; c++) {
+      const myIsOwn = c === myS[i].cls, myNum = myCnt[c] - (myIsOwn ? 1 : 0); if (myNum < 1) continue;
+      let d = 0, n = 0;
+      for (let k = 0; k < myDim; k++) { const v = mySum[c][k] - (myIsOwn ? myUnit[i][k] : 0); d += v * myUnit[i][k]; n += v * v; }
+      const mySim = d / (Math.sqrt(n) || 1);
+      if (myIsOwn) myOwn = mySim; else if (mySim > myBest) { myBest = mySim; myBestClass = c; }
+    }
+    if (myOwn !== null && myBestClass >= 0) myRes.push({ s: myS[i], margin: myOwn - myBest, other: myBestClass });
+    if (i % 100 === 99) await tick();
+  }
+  myRes.sort((a, b) => a.margin - b.margin);
+  const sp = currentSplit(); let myLeak = 0;
+  for (const v of sp.val) {
+    let myTop = -2; const myV = myUnit[myIndex.get(v)];
+    for (const t of sp.train) { const myT = myUnit[myIndex.get(t)]; let d = 0; for (let k = 0; k < myDim; k++) d += myV[k] * myT[k]; if (d > myTop) myTop = d; }
+    if (myTop > 0.97) myLeak++;
+  }
+  const myGal = $('myMnDoctorGal'); myGal.innerHTML = '';
+  myRes.slice(0, 12).forEach(r => {
+    const myFig = document.createElement('figure'), myImg = document.createElement('img'), myCap = document.createElement('figcaption');
+    myImg.src = r.s.url; myImg.alt = r.s.name; myFig.appendChild(myImg);
+    myCap.textContent = state.classes[r.s.cls] + (r.margin < 0 ? ' looks like ' + state.classes[r.other] : '') + ' (margin ' + r.margin.toFixed(2) + ')';
+    myFig.appendChild(myCap); myFig.onclick = () => openInsp(r.s); myGal.appendChild(myFig);
+  });
+  myMnSay('<b>Dataset doctor.</b> The 12 images below are least like their own class (click one to inspect, move or delete it). A negative margin means MobileNet thinks the image looks more like another class, so it may be mislabeled.' +
+    (sp.val.length ? '<br>Validation fairness: ' + myLeak + ' of ' + sp.val.length + ' validation images have a near-identical training image (similarity above 0.97, a rule of thumb). ' + (myLeak > sp.val.length / 4 ? '<span class="warn">Many near-duplicates, so validation accuracy is probably too optimistic. Burst captures of the same scene cause this.</span>' : '<span class="ok">Validation looks reasonably independent.</span>') : ''));
+}
+function myMnSave() {
+  if (!myMn.head) { myMnSay('Train a head first.'); return; }
+  const myLayers = myMn.head.layers.filter(l => l.getWeights().length).map(l => { const w = l.getWeights(); return { inDim: w[0].shape[0], units: w[0].shape[1], activation: l.getConfig().activation, w: Array.from(w[0].dataSync()), b: Array.from(w[1].dataSync()) }; });
+  const myObj = { format: 'webmcu-mobilenet-head', formatVersion: 1, page: VERSION, classes: myMn.classes,
+    backbone: { key: myMn.headKey, library: '@tensorflow-models/mobilenet 2.1.1', tfjs: '4.22.0', inputSize: 224, resize: '240x240 to 224x224 canvas drawImage', channels: 'RGB', normalization: '(pixel / 127.5) - 1', embedding: 'global average pool', embeddingSize: myMn.dim },
+    layers: myLayers };
+  const myUrl = URL.createObjectURL(new Blob([JSON.stringify(myObj)], { type: 'application/json' })), myLink = document.createElement('a');
+  myLink.href = myUrl; myLink.download = 'myMobilenetHead.json'; myLink.click(); setTimeout(() => URL.revokeObjectURL(myUrl), 1000);
+  myMnSay('Saved myMobilenetHead.json: the head weights, class names and the exact preprocessing needed to reproduce predictions. It is only the head; it needs the same MobileNet backbone.');
+}
+async function myMnLoadHead(myInput) {
+  const myFile = myInput.files[0]; myInput.value = ''; if (!myFile) return;
+  try {
+    const myObj = JSON.parse(await myFile.text());
+    if (myObj.format !== 'webmcu-mobilenet-head') throw new Error('this is not a MobileNet head file');
+    if (myObj.classes.join('|') !== state.classes.join('|')) throw new Error('class names differ. The file has: ' + myObj.classes.join(', '));
+    if (!window.tf) await myLoadScript(MY_TFJS_URL);
+    await tf.ready();
+    if (myMn.head) myMn.head.dispose();
+    const myModel = tf.sequential();
+    myObj.layers.forEach((L, i) => { const myCfg = { units: L.units, activation: L.activation }; if (i === 0) myCfg.inputShape = [L.inDim]; myModel.add(tf.layers.dense(myCfg)); });
+    myModel.layers.forEach((layer, i) => { const L = myObj.layers[i], myW = tf.tensor2d(L.w, [L.inDim, L.units]), myB = tf.tensor1d(L.b); layer.setWeights([myW, myB]); myW.dispose(); myB.dispose(); });
+    myMn.head = myModel; myMn.headKey = myObj.backbone.key; myMn.classes = myObj.classes; $('myMnModel').value = myObj.backbone.key;
+    myMnSay('<span class="ok">Head loaded</span> for ' + esc(myObj.backbone.key) + '. ' + (myMn.key === myObj.backbone.key ? 'The matching MobileNet is already loaded: press Compare.' : 'Press Load MobileNet (the selection was set to match), then Compare.'));
+  } catch (myProblem) { myMnSay('<span class="bad">Could not load the head: ' + esc(myProblem.message) + '</span>'); }
+}
+
+// ---------- own MobileNetV1 alpha 0.25 float engine ----------
+const myEng = { bb: null, layers: null, ctx: {} };
+function myEngTensor(myWeights, myNeed, myEnd) {
+  const myName = Object.keys(myWeights).find(k => k.indexOf(myNeed) >= 0 && k.endsWith(myEnd));
+  if (!myName) throw new Error('weight not found: ' + myNeed + myEnd);
+  return myWeights[myName][0].dataSync();
+}
+function myEngLoad() {
+  if (!myMn.bb || myMn.key !== 'v1-0.25') throw new Error('Load MobileNetV1 alpha 0.25 first (the own engine is built for that model).');
+  if (myEng.bb === myMn.bb && myEng.layers) return;
+  const myW = myMn.bb.model.weights, myOut = [];
+  const myCh = [8, 16, 32, 32, 64, 64, 128, 128, 128, 128, 128, 128, 256, 256], myStr = [1, 2, 1, 2, 1, 2, 1, 1, 1, 1, 1, 2, 1];
+  myOut.push({ type: 'conv', stride: 2, inCh: 3, outCh: 8, w: myEngTensor(myW, '/Conv2d_0/', 'weights'), b: myEngTensor(myW, '/Conv2d_0/', 'Conv2D_bn_offset') });
+  for (let i = 1; i <= 13; i++) {
+    const myDw = '/Conv2d_' + i + '_depthwise/', myPw = '/Conv2d_' + i + '_pointwise/';
+    myOut.push({ type: 'dw', stride: myStr[i - 1], inCh: myCh[i - 1], outCh: myCh[i - 1], w: myEngTensor(myW, myDw, 'depthwise_weights'), b: myEngTensor(myW, myDw, 'depthwise_bn_offset') });
+    myOut.push({ type: 'pw', stride: 1, inCh: myCh[i - 1], outCh: myCh[i], w: myEngTensor(myW, myPw, 'weights'), b: myEngTensor(myW, myPw, 'Conv2D_bn_offset') });
+  }
+  myEng.layers = myOut; myEng.bb = myMn.bb;
+}
+function myEngInput(mySize) {
+  if (!myEng.ctx[mySize]) { const c = document.createElement('canvas'); c.width = c.height = mySize; myEng.ctx[mySize] = c.getContext('2d', { willReadFrequently: true }); }
+  const myCtx = myEng.ctx[mySize]; myCtx.drawImage(scratch, 0, 0, mySize, mySize);
+  const myD = myCtx.getImageData(0, 0, mySize, mySize).data, myX = new Float32Array(mySize * mySize * 3);
+  for (let i = 0, j = 0; i < mySize * mySize; i++) { myX[j++] = myD[i * 4] / 127.5 - 1; myX[j++] = myD[i * 4 + 1] / 127.5 - 1; myX[j++] = myD[i * 4 + 2] / 127.5 - 1; }
+  return myX;
+}
+function myEngRun(myIn, mySize, myTrack) {
+  let myX = myIn, myS = mySize;
+  for (let li = 0; li < myEng.layers.length; li++) {
+    const L = myEng.layers[li];
+    const myO = Math.ceil(myS / L.stride), myIc = L.inCh, myOc = L.outCh, myY = new Float32Array(myO * myO * myOc);
+    const myPad = L.type === 'pw' ? 0 : Math.floor(Math.max((myO - 1) * L.stride + 3 - myS, 0) / 2);
+    for (let y = 0; y < myO; y++) for (let x = 0; x < myO; x++) {
+      const myBase = (y * myO + x) * myOc;
+      for (let o = 0; o < myOc; o++) myY[myBase + o] = L.b[o];
+      if (L.type === 'pw') {
+        const myIn0 = (y * myS + x) * myIc;
+        for (let i = 0; i < myIc; i++) { const v = myX[myIn0 + i], myW0 = i * myOc; for (let o = 0; o < myOc; o++) myY[myBase + o] += v * L.w[myW0 + o]; }
+      } else for (let ky = 0; ky < 3; ky++) for (let kx = 0; kx < 3; kx++) {
+        const iy = y * L.stride - myPad + ky, ix = x * L.stride - myPad + kx;
+        if (iy < 0 || iy >= myS || ix < 0 || ix >= myS) continue;
+        const myIn0 = (iy * myS + ix) * myIc;
+        if (L.type === 'dw') for (let c = 0; c < myOc; c++) myY[myBase + c] += myX[myIn0 + c] * L.w[(ky * 3 + kx) * myOc + c];
+        else for (let c = 0; c < 3; c++) { const v = myX[myIn0 + c], myW0 = ((ky * 3 + kx) * 3 + c) * myOc; for (let o = 0; o < myOc; o++) myY[myBase + o] += v * L.w[myW0 + o]; }
+      }
+      for (let o = 0; o < myOc; o++) { const v = myY[myBase + o]; myY[myBase + o] = v < 0 ? 0 : (v > 6 ? 6 : v); }
+    }
+    if (myTrack) { let m = 0; for (let i = 0; i < myY.length; i++) if (myY[i] > m) m = myY[i]; if (m > myTrack[li]) myTrack[li] = m; }
+    myX = myY; myS = myO;
+  }
+  const myEmb = new Float32Array(256), myCount = myS * myS;
+  for (let p = 0; p < myCount; p++) for (let c = 0; c < 256; c++) myEmb[c] += myX[p * 256 + c] / myCount;
+  return myEmb;
+}
+async function myEngVerify() {
+  try { myEngLoad(); } catch (myProblem) { myMnSay('<span class="bad">' + esc(myProblem.message) + '</span>'); return; }
+  const myList = state.samples.slice(0, 5);
+  if (!myList.length) { myMnSay('No images loaded.'); return; }
+  await myMnFeatures(myList);
+  let myMax = 0, myMs = 0;
+  for (const s of myList) {
+    await decodeBlob(s.blob);
+    const myT0 = performance.now(), myE = myEngRun(myEngInput(224), 224); myMs += performance.now() - myT0;
+    const myF = myMn.feats.get(s); for (let k = 0; k < 256; k++) myMax = Math.max(myMax, Math.abs(myE[k] - myF[k]));
+  }
+  myMnSay('<b>Own engine vs TensorFlow.js at 224</b> on ' + myList.length + ' images: largest difference in the 256 embedding values ' + myMax.toExponential(2) + '. Own engine ' + (myMs / myList.length).toFixed(0) + ' ms per image (browser JS, measured). Differences near 1e-4 or smaller are float rounding.');
+  log('Own MobileNet engine max embedding difference at 224: ' + myMax.toExponential(2));
+}
+async function myEngHeadAccuracy(myMap, sp, myUse, myN) {
+  const myHidden = parseInt($('myMnHidden').value) || 0, myEpochs = parseInt($('myMnEpochs').value) || 40, myLr = parseFloat($('myMnLr').value) || 0.001;
+  const myModel = myMnBuildHead(myHidden, myN, 256);
+  myModel.compile({ optimizer: tf.train.adam(myLr), loss: 'categoricalCrossentropy' });
+  const myX = tf.tensor2d(sp.train.map(s => myMap.get(s))), myY = tf.oneHot(tf.tensor1d(sp.train.map(s => s.cls), 'int32'), myN);
+  await myModel.fit(myX, myY, { epochs: myEpochs, batchSize: 16, shuffle: true });
+  const myP = tf.tidy(() => Array.from(myModel.predict(tf.tensor2d(myUse.map(s => myMap.get(s)))).argMax(-1).dataSync()));
+  myX.dispose(); myY.dispose(); myModel.dispose();
+  return myUse.reduce((a, s, i) => a + (myP[i] === s.cls ? 1 : 0), 0);
+}
+async function myEngResolutions() {
+  try { myEngLoad(); } catch (myProblem) { myMnSay('<span class="bad">' + esc(myProblem.message) + '</span>'); return; }
+  const myN = state.classes.length, sp = currentSplit();
+  if (myN < 2 || !sp.train.length) { myMnSay('Need at least 2 classes with images.'); return; }
+  const myUse = sp.val.length ? sp.val : state.samples, myWhich = sp.val.length ? 'validation' : 'all images (no validation images, so optimistic)', myRows = [];
+  await myMnFeatures(state.samples);
+  const myRowHtml = (myName, myOk, myMs) => '<tr><td>' + myName + '</td><td>' + myOk + ' of ' + myUse.length + ' (' + (100 * myOk / myUse.length).toFixed(1) + '%)</td><td>' + myMs.toFixed(1) + ' ms</td></tr>';
+  myMnSay('Training a head on TensorFlow.js features at 224...');
+  myRows.push(myRowHtml('TensorFlow.js 224 (reference)', await myEngHeadAccuracy(myMn.feats, sp, myUse, myN), myMn.extractN ? myMn.extractMs / myMn.extractN : 0));
+  for (const myRes of [96, 128, 224]) {
+    const myMap = new Map(), myT0 = performance.now();
+    for (let i = 0; i < state.samples.length; i++) {
+      await decodeBlob(state.samples[i].blob); myMap.set(state.samples[i], myEngRun(myEngInput(myRes), myRes));
+      if (i % 3 === 2) { myMnSay('Own engine at ' + myRes + 'x' + myRes + ': image ' + (i + 1) + ' of ' + state.samples.length); await tick(); }
+    }
+    const myMs = (performance.now() - myT0) / state.samples.length;
+    myMnSay('Training a head on own engine features at ' + myRes + '...');
+    myRows.push(myRowHtml('Own engine ' + myRes + 'x' + myRes, await myEngHeadAccuracy(myMap, sp, myUse, myN), myMs));
+  }
+  $('myMnTable').innerHTML = '<table><thead><tr><th>Backbone input</th><th>Head correct on ' + myWhich + '</th><th>Backbone time per image</th></tr></thead><tbody>' + myRows.join('') + '</tbody></table>' +
+    '<p class="note">Measured in this browser with the same head settings. Each row trains its own new head, and head training is random, so a difference of one or two images is noise. Times are browser JavaScript, not the ESP32.</p>';
+  myMnSay('Resolution comparison done on ' + myUse.length + ' ' + esc(myWhich) + ' images.');
+}
+
+// ---------- MobileNet INT8 (pathway 3 on the ESP32): file formats WMN1 (model) and WMT1 (test picture) ----------
+const myQn = { layers: null, size: 96, finalScale: 0, lut: null, px: new Map(), head: null, headLayers: null, test: null, key: '' };
+const myQnSay = myText => { $('myQnInfo').innerHTML = myText; };
+function myQnRq(myAcc, myM0, mySh) {
+  const myV = Math.floor((myAcc * myM0 + Math.pow(2, mySh - 1)) / Math.pow(2, mySh));
+  return myV < 0 ? 0 : (myV > 127 ? 127 : myV);
+}
+function myQnFnv(myBytes) { let h = 2166136261; for (let i = 0; i < myBytes.length; i++) h = Math.imul(h ^ (myBytes[i] & 255), 16777619) >>> 0; return h; }
+function myQnPixels(myRgba) {
+  if (!myQn.lut) { myQn.lut = new Int32Array(96); for (let i = 0; i < 96; i++) myQn.lut[i] = Math.floor((i + 0.5) * SRC / 96); }
+  const myOut = new Uint8Array(96 * 96 * 3);
+  for (let y = 0; y < 96; y++) for (let x = 0; x < 96; x++) {
+    const si = (myQn.lut[y] * SRC + myQn.lut[x]) * 4, di = (y * 96 + x) * 3;
+    myOut[di] = myRgba[si]; myOut[di + 1] = myRgba[si + 1]; myOut[di + 2] = myRgba[si + 2];
+  }
+  return myOut;
+}
+async function myQnGetPixels(s) {
+  if (!myQn.px.has(s)) myQn.px.set(s, myQnPixels(await decodeBlob(s.blob)));
+  return myQn.px.get(s);
+}
+function myQnFloatInput(myPx) { const myX = new Float32Array(myPx.length); for (let i = 0; i < myPx.length; i++) myX[i] = myPx[i] / 127.5 - 1; return myX; }
+function myQnIntInput(myPx) { const myX = new Int8Array(myPx.length); for (let i = 0; i < myPx.length; i++) myX[i] = myPx[i] - 128; return myX; }
+// Per-channel weight scales, per-tensor activation scales. Weights are stored the way the firmware reads them.
+function myQnLayer(L, mySin, mySout) {
+  const myT = L.type === 'conv' ? 27 : (L.type === 'dw' ? 9 : L.inCh), myOc = L.outCh;
+  const myRec = { kind: L.type === 'conv' ? 0 : (L.type === 'dw' ? 1 : 2), stride: L.stride, inCh: L.inCh, outCh: myOc, w: new Int8Array(myT * myOc), bias: new Int32Array(myOc), m0: new Int32Array(myOc), sh: new Uint8Array(myOc) };
+  for (let c = 0; c < myOc; c++) {
+    let myMax = 1e-8; for (let t = 0; t < myT; t++) myMax = Math.max(myMax, Math.abs(L.w[t * myOc + c]));
+    const mySw = myMax / 127;
+    for (let t = 0; t < myT; t++) {
+      const myQ = Math.max(-127, Math.min(127, Math.round(L.w[t * myOc + c] / mySw)));
+      myRec.w[myRec.kind === 1 ? t * myOc + c : c * myT + t] = myQ;
+    }
+    myRec.bias[c] = Math.round(L.b[c] / (mySw * mySin));
+    const myM = mySw * mySin / mySout;
+    let mySh = 14 - Math.floor(Math.log2(myM)), myM0 = Math.round(myM * Math.pow(2, mySh));
+    if (myM0 >= 32768) { mySh -= 1; myM0 = Math.round(myM * Math.pow(2, mySh)); }
+    if (mySh < 1 || mySh > 62) throw new Error('requantization scale out of range in a layer');
+    myRec.m0[c] = myM0; myRec.sh[c] = mySh;
+  }
+  return myRec;
+}
+// Integer forward pass. The firmware does exactly this arithmetic. Input: Int8Array 96x96x3 (pixel minus 128).
+function myQnRun(myIn, myLayers) {
+  let myX = myIn, myS = 96;
+  for (const L of myLayers) {
+    const myO = L.stride === 1 ? myS : myS / 2, myIc = L.inCh, myOc = L.outCh, myPad = L.stride === 1 ? 1 : 0, myY = new Int8Array(myO * myO * myOc);
+    for (let y = 0; y < myO; y++) for (let x = 0; x < myO; x++) for (let o = 0; o < myOc; o++) {
+      let myAcc = L.bias[o];
+      if (L.kind === 2) { const b = (y * myS + x) * myIc, wb = o * myIc; for (let i = 0; i < myIc; i++) myAcc += myX[b + i] * L.w[wb + i]; }
+      else for (let ky = 0; ky < 3; ky++) for (let kx = 0; kx < 3; kx++) {
+        const iy = y * L.stride + ky - myPad, ix = x * L.stride + kx - myPad;
+        if (iy < 0 || iy >= myS || ix < 0 || ix >= myS) continue;
+        if (L.kind === 1) myAcc += myX[(iy * myS + ix) * myIc + o] * L.w[(ky * 3 + kx) * myOc + o];
+        else for (let c = 0; c < 3; c++) myAcc += myX[(iy * myS + ix) * 3 + c] * L.w[o * 27 + (ky * 3 + kx) * 3 + c];
+      }
+      myY[(y * myO + x) * myOc + o] = myQnRq(myAcc, L.m0[o], L.sh[o]);
+    }
+    myX = myY; myS = myO;
+  }
+  return myX;
+}
+function myQnEmbedding(myMap, myScale) {
+  const myE = new Float32Array(256);
+  for (let c = 0; c < 256; c++) { let s = 0; for (let p = 0; p < 9; p++) s += myMap[p * 256 + c]; myE[c] = s * myScale / 9; }
+  return myE;
+}
+async function myQnBuild() {
+  try { myEngLoad(); } catch (myProblem) { myQnSay('<span class="bad">' + esc(myProblem.message) + '</span>'); return; }
+  if (!state.samples.length) { myQnSay('No images loaded.'); return; }
+  const myCount = Math.min(parseInt($('myQnCal').value) || 100, state.samples.length), myMax = new Float32Array(27);
+  for (let k = 0; k < myCount; k++) {
+    myEngRun(myQnFloatInput(await myQnGetPixels(state.samples[Math.floor(k * state.samples.length / myCount)])), 96, myMax);
+    if (k % 5 === 4) { myQnSay('Calibrating on image ' + (k + 1) + ' of ' + myCount + '...'); await tick(); }
+  }
+  try {
+    const myLayers = []; let mySin = 1 / 127.5;
+    for (let i = 0; i < 27; i++) { const mySout = Math.max(myMax[i], 1e-3) / 127; myLayers.push(myQnLayer(myEng.layers[i], mySin, mySout)); mySin = mySout; }
+    myQn.layers = myLayers; myQn.finalScale = mySin; myQn.head = null; myQn.headLayers = null; myQn.test = null; myQn.key = myMn.key;
+  } catch (myProblem) { myQnSay('<span class="bad">' + esc(myProblem.message) + '</span>'); return; }
+  let myBytes = 0; myQn.layers.forEach(L => { myBytes += L.w.length + L.outCh * 9; });
+  myQnSay('<span class="ok">Backbone quantized to INT8 at 96x96</span> using ' + myCount + ' calibration images: ' + myBytes + ' bytes of weights, biases and scales. Per-channel weight scales, per-tensor activation scales, activations use 0 to 127. Next: 2 Train head on INT8 features.');
+  log('MobileNet INT8 backbone built (' + myBytes + ' bytes).');
+}
+function myQnFit(myMap, sp, myN) {
+  const myHidden = parseInt($('myMnHidden').value) || 0, myEpochs = parseInt($('myMnEpochs').value) || 40, myLr = parseFloat($('myMnLr').value) || 0.001;
+  const myModel = myMnBuildHead(myHidden, myN, 256);
+  myModel.compile({ optimizer: tf.train.adam(myLr), loss: 'categoricalCrossentropy' });
+  const myX = tf.tensor2d(sp.train.map(s => myMap.get(s))), myY = tf.oneHot(tf.tensor1d(sp.train.map(s => s.cls), 'int32'), myN);
+  return myModel.fit(myX, myY, { epochs: myEpochs, batchSize: 16, shuffle: true }).then(() => { myX.dispose(); myY.dispose(); return myModel; });
+}
+function myQnPredict(myModel, myList) {
+  return tf.tidy(() => { const myP = myModel.predict(tf.tensor2d(myList)); return { cls: Array.from(myP.argMax(-1).dataSync()), probs: Array.from(myP.dataSync()) }; });
+}
+async function myQnTrain() {
+  if (!myQn.layers) { myQnSay('Press 1 Quantize first.'); return; }
+  const myN = state.classes.length, sp = currentSplit();
+  if (myN < 2 || !sp.train.length) { myQnSay('Need at least 2 classes with images.'); return; }
+  const myUse = sp.val.length ? sp.val : state.samples, myWhich = sp.val.length ? 'validation' : 'all images (no validation images, so optimistic)';
+  const myInt = new Map(), myFloat = new Map(); let mySim = 0;
+  for (let i = 0; i < state.samples.length; i++) {
+    const s = state.samples[i], myPx = await myQnGetPixels(s);
+    const myA = myQnEmbedding(myQnRun(myQnIntInput(myPx), myQn.layers), myQn.finalScale), myB = myEngRun(myQnFloatInput(myPx), 96);
+    let d = 0, na = 0, nb = 0; for (let k = 0; k < 256; k++) { d += myA[k] * myB[k]; na += myA[k] * myA[k]; nb += myB[k] * myB[k]; }
+    mySim += d / (Math.sqrt(na * nb) || 1); myInt.set(s, myA); myFloat.set(s, myB);
+    if (i % 3 === 2) { myQnSay('Running float and INT8 backbones: image ' + (i + 1) + ' of ' + state.samples.length); await tick(); }
+  }
+  myQnSay('Training heads...');
+  const myHeadInt = await myQnFit(myInt, sp, myN), myHeadFloat = await myQnFit(myFloat, sp, myN);
+  const myOk = (myModel, myMap) => { const myP = myQnPredict(myModel, myUse.map(s => myMap.get(s))).cls; return myUse.reduce((a, s, i) => a + (myP[i] === s.cls ? 1 : 0), 0); };
+  const myAll = state.samples, myPi = myQnPredict(myHeadInt, myAll.map(s => myInt.get(s))).cls, myPf = myQnPredict(myHeadInt, myAll.map(s => myFloat.get(s))).cls;
+  let mySame = 0; for (let i = 0; i < myAll.length; i++) if (myPi[i] === myPf[i]) mySame++;
+  const myRow = (a, b) => '<tr><td>' + a + '</td><td>' + b + ' of ' + myUse.length + ' (' + (100 * b / myUse.length).toFixed(1) + '%)</td></tr>';
+  $('myQnTable').innerHTML = '<table><thead><tr><th>96x96 backbone (nearest-pixel input)</th><th>Head correct on ' + myWhich + '</th></tr></thead><tbody>' +
+    myRow('Float engine, head trained on float features', myOk(myHeadFloat, myFloat)) + myRow('INT8 engine, head trained on INT8 features (this is what the ESP32 runs)', myOk(myHeadInt, myInt)) + '</tbody></table>' +
+    '<p class="note">Embedding cosine similarity between INT8 and float, mean over all ' + myAll.length + ' images: ' + (mySim / myAll.length).toFixed(4) + '. The INT8 head gives the same class on the INT8 and the float embedding for ' + mySame + ' of ' + myAll.length + ' images. Measured in this browser. A one or two image difference is noise.</p>';
+  myHeadFloat.dispose();
+  if (myQn.head) myQn.head.dispose();
+  myQn.head = myHeadInt;
+  myQn.headLayers = myHeadInt.layers.filter(l => l.getWeights().length).map(l => { const w = l.getWeights(); return { inDim: w[0].shape[0], outDim: w[0].shape[1], relu: l.getConfig().activation === 'relu' ? 1 : 0, w: new Float32Array(w[0].dataSync()), b: new Float32Array(w[1].dataSync()) }; });
+  const myTestSample = myUse[0], myPx = await myQnGetPixels(myTestSample), myMap = myQnRun(myQnIntInput(myPx), myQn.layers);
+  const myPred = myQnPredict(myHeadInt, [myQnEmbedding(myMap, myQn.finalScale)]);
+  myQn.test = { px: myPx, checksum: myQnFnv(myMap), cls: myPred.cls[0], probs: myPred.probs, name: myTestSample.name };
+  myQnSay('<span class="ok">Head trained on INT8 features.</span> Test picture ' + esc(myTestSample.name) + ': feature map checksum <b>' + myQn.test.checksum.toString(16).toUpperCase().padStart(8, '0') + '</b>, class ' + esc(state.classes[myQn.test.cls]) + ' (' + myQn.test.probs.map(p => (100 * p).toFixed(1) + '%').join(' ') + '). The firmware self test must print the same checksum and class. Next: 3 Save for the SD card.');
+}
+function myQnBlob() {
+  const myParts = [], myHead = new DataView(new ArrayBuffer(32));
+  'WMN1'.split('').forEach((ch, i) => myHead.setUint8(i, ch.charCodeAt(0)));
+  myHead.setUint16(4, 1, true); myHead.setUint16(6, 96, true); myHead.setUint16(8, 27, true); myHead.setUint16(10, 256, true);
+  myHead.setUint16(12, state.classes.length, true); myHead.setUint16(14, myQn.headLayers.length, true); myHead.setFloat32(16, myQn.finalScale, true); myHead.setUint16(20, 9, true);
+  myParts.push(new Uint8Array(myHead.buffer));
+  const myRecord = (a, b, c, d) => { const v = new DataView(new ArrayBuffer(8)); v.setUint8(0, a); v.setUint8(1, b); v.setUint16(2, c, true); v.setUint16(4, d, true); return new Uint8Array(v.buffer); };
+  for (const L of myQn.layers) {
+    myParts.push(myRecord(L.kind, L.stride, L.inCh, L.outCh), new Uint8Array(L.w.buffer), new Uint8Array(L.bias.buffer), new Uint8Array(L.m0.buffer), L.sh);
+  }
+  for (const H of myQn.headLayers) {
+    const v = new DataView(new ArrayBuffer(8)); v.setUint16(0, H.inDim, true); v.setUint16(2, H.outDim, true); v.setUint8(4, H.relu);
+    myParts.push(new Uint8Array(v.buffer), new Uint8Array(H.w.buffer), new Uint8Array(H.b.buffer));
+  }
+  myParts.push(new Uint8Array([69, 78, 68, 49]));
+  const myTotal = myParts.reduce((a, p) => a + p.length, 0), myOut = new Uint8Array(myTotal); let myAt = 0;
+  for (const p of myParts) { myOut.set(p, myAt); myAt += p.length; }
+  return myOut;
+}
+function myQnTestBlob() {
+  const myOut = new Uint8Array(16 + myQn.test.px.length), v = new DataView(myOut.buffer);
+  'WMT1'.split('').forEach((ch, i) => v.setUint8(i, ch.charCodeAt(0)));
+  v.setUint16(4, 96, true); v.setUint32(8, myQn.test.checksum, true); v.setUint16(12, myQn.test.cls, true);
+  myOut.set(myQn.test.px, 16);
+  return myOut;
+}
+async function myQnSave() {
+  if (!myQn.layers || !myQn.headLayers || !myQn.test) { myQnSay('Press 1 Quantize and 2 Train head first.'); return; }
+  const myModel = myQnBlob(), myTest = myQnTestBlob();
+  if (state.mode === 'dir') {
+    try {
+      const hd = await state.root.getDirectoryHandle('header', { create: true });
+      await writeFile(hd, 'myMobilenetInt8.bin', new Blob([myModel]));
+      await writeFile(hd, 'myMobilenetTest.bin', new Blob([myTest]));
+      await writeFile(hd, 'config.json', new Blob([configJson()]));
+      myQnSay('Saved header/myMobilenetInt8.bin (' + myModel.length + ' bytes), header/myMobilenetTest.bin (' + myTest.length + ' bytes) and header/config.json. On the device choose MobileNet INT8.');
+    } catch (myProblem) { myQnSay('<span class="bad">Save failed: ' + esc(myProblem.message) + '</span>'); }
+  } else {
+    [['myMobilenetInt8.bin', myModel], ['myMobilenetTest.bin', myTest]].forEach(([myName, myData]) => {
+      const myUrl = URL.createObjectURL(new Blob([myData])), myLink = document.createElement('a');
+      myLink.href = myUrl; myLink.download = myName; myLink.click(); setTimeout(() => URL.revokeObjectURL(myUrl), 1000);
+    });
+    myQnSay('Downloaded myMobilenetInt8.bin and myMobilenetTest.bin. Copy both into the header folder of the SD card, together with config.json (section 6).');
+  }
+  log('MobileNet INT8 files saved or downloaded.');
+}
+
+// ---------- wiring ----------
+$('btnDir').onclick = pickDir;
+$('btnZip').onclick = () => $('zipFile').click();
+$('zipFile').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) loadZipFile(f); };
+$('btnAddClass').onclick = addClass;
+$('newClass').onkeydown = e => { if (e.key === 'Enter') addClass(); };
+$('btnCam').onclick = () => state.stream ? stopCam() : startCam();
+$('btnCapture').onclick = capture;
+$('btnTrain').onclick = onTrain;
+$('btnPause').onclick = () => { state.pause = !state.pause; setTrainButtons(); };
+$('btnStop').onclick = () => { state.stop = true; state.pause = false; };
+$('btnEval').onclick = runEval;
+$('btnParity').onclick = () => parity();
+$('btnLive').onclick = toggleLive;
+$('btnSaveW').onclick = saveWeights;
+$('btnSaveZip').onclick = saveZip;
+$('inspClose').onclick = () => $('insp').close();
+$('inspDelete').onclick = () => state.insp && deleteSample(state.insp);
+$('inspMoveBtn').onclick = () => state.insp && moveSample(state.insp, parseInt($('inspMove').value));
+$('inspParity').onclick = () => parity(state.insp);
+$('insp').addEventListener('close', () => { /* keep state.insp for the parity button */ });
+document.querySelectorAll('.heatAgg').forEach(e => e.onchange = () => { heat.agg = e.value; syncHeatControls(); drawInsp(); renderDev(); });
+document.querySelectorAll('.heatOverlay').forEach(e => e.onchange = () => { heat.overlay = e.checked; syncHeatControls(); drawInsp(); renderDev(); });
+$('valMode').onchange = () => {
+  const fw = $('valMode').value === 'fw';
+  $('valAmtLabel').textContent = fw ? 'Images per class held out' : '% of smallest class held out';
+  $('valAmt').value = fw ? 3 : 20; renderClasses(); updateSplitInfo();
+};
+$('valAmt').oninput = () => { renderClasses(); updateSplitInfo(); };
+$('epochs').oninput = () => { const v = parseInt($('epochs').value); if (v >= 1 && !state.training) { state.epochsPlanned = v; drawCharts(); } };
+document.addEventListener('keydown', e => {
+  if ((e.code !== 'Space' && e.code !== 'KeyB') || $('insp').open || $('rev').open || !state.stream) return;
+  if (/^(INPUT|SELECT|TEXTAREA|BUTTON|SUMMARY)$/.test(document.activeElement.tagName)) return;
+  e.preventDefault(); if (e.code === 'KeyB') burst(); else capture();
+});
+$('btnBurst').onclick = burst;
+$('btnReview').onclick = openReview;
+// Layout: picking a preset copies it into the number box; typing in the box applies on Enter or when leaving it.
+$('inSize').onchange = () => {
+  const v = $('inSize').value;
+  if (v === 'custom') { $('inSizeNum').focus(); $('inSizeNum').select(); return; }
+  $('inSizeNum').value = v; onLayoutChange();
+};
+$('inSizeNum').onchange = onLayoutChange; $('c1f').onchange = onLayoutChange; $('c2f').onchange = onLayoutChange;
+$('revClose').onclick = () => $('rev').close();
+$('revClass').onchange = () => buildRev(0);
+$('revSusp').onchange = () => buildRev(0);
+$('revPrev').onclick = () => revMove(-1);
+$('revNext').onclick = () => revMove(1);
+$('revMark').onclick = revToggle;
+$('revNextClass').onclick = revNextClass;
+$('revDelete').onclick = deleteMarked;
+$('revClear').onclick = () => { state.marks.clear(); showRev(); };
+$('rev').addEventListener('keydown', e => {
+  if (/^(SELECT|INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+  if (e.key === 'ArrowLeft') { e.preventDefault(); revMove(-1); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); revMove(1); }
+  else if (e.key === 'x' || e.key === 'X' || e.key === 'Delete') { e.preventDefault(); revToggle(); }
+});
+$('btnSaveCfg').onclick = saveConfig;
+$('btnSerial').onclick = serConnect;
+$('serDebug').onchange = serDebugSync;
+$('serSend').onclick = serSend;
+$('serIn').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); serSend(); } };
+if ('serial' in navigator) navigator.serial.addEventListener('disconnect', e => { if (e.target === ser.port) serDisconnect(); });
+else { $('btnSerial').disabled = true; $('btnSerial').classList.remove('primary'); $('serStatus').textContent = 'Web Serial is not available in this browser. Use desktop Chrome or Edge.'; }
+window.addEventListener('beforeunload', e => { if (state.dirty) { e.preventDefault(); e.returnValue = ''; } });
+
+if (!window.showDirectoryPicker) {
+  $('btnDir').disabled = true; $('btnDir').classList.remove('primary'); $('btnZip').classList.add('primary');
+  $('dirNote').textContent = 'This browser has no folder picker (phones, Safari, Firefox). Use Load .zip, then Save .zip. Desktop Chrome or Edge can work directly on the SD card.';
+} else $('dirNote').textContent = 'Desktop Chrome or Edge: pick the SD card root and changes are written straight to the card. Other browsers: use .zip.';
+
+syncHeatControls(); syncLayoutControls(); renderAll();
+log('Vision CNN INT8 SD trainer ' + VERSION + ' ready. Layout ' + IN + 'x' + IN + 'x' + CH + ', conv filters ' + C1F + '/' + C2F + ', ' + FLAT + ' flattened.');
+</script>
+</body>
+</html>
